@@ -1,13 +1,12 @@
 """Conversational Analytics (Data Agent) client: published context, create, chat.
 
-Two agents look at the same five tables. The only difference is whether the
+Two agents look at the same `orders` table. The only difference is whether the
 company's business definition is in the system instruction:
 
-    raw      five tables, no business definition
-    defined  five tables, business definition
+    raw      orders table, no business definition
+    defined  orders table, business definition
 
-Keeping the data source identical is what makes the comparison fair: a view
-that already encodes the rules would leak the definition into the "raw" run.
+Keeping the data source identical is what makes the comparison fair.
 """
 
 from __future__ import annotations
@@ -25,9 +24,9 @@ HOSTS = {
     "eu": "geminidataanalytics.eu.rep.googleapis.com",
     "global": "geminidataanalytics.googleapis.com",
 }
-TABLES = ["products", "campaigns", "orders", "order_items", "refunds"]
+TABLES = ["orders"]
 VARIANTS = ("raw", "defined")
-DISPLAY_NAMES = {"raw": "EC分析（業務定義なし）", "defined": "EC分析（業務定義あり）"}
+DISPLAY_NAMES = {"raw": "売上分析（業務定義なし）", "defined": "売上分析（業務定義あり）"}
 
 
 class DataAgentError(RuntimeError):
@@ -58,7 +57,7 @@ def published_context(project: str, dataset: str, variant: str) -> dict:
 
 
 def agent_id(variant: str) -> str:
-    return os.getenv(f"DATA_AGENT_ID_{variant.upper()}", f"ec-{variant}")
+    return os.getenv(f"DATA_AGENT_ID_{variant.upper()}", f"sales-{variant}")
 
 
 class DataAgentClient:
@@ -117,7 +116,7 @@ class DataAgentClient:
         payload = {
             "name": self.name(variant),
             "displayName": DISPLAY_NAMES[variant],
-            "description": "adk-cloud-run-ec-analytics-agent:" + variant,
+            "description": "adk-cloud-run-sales-demo:" + variant,
             "dataAnalyticsAgent": {"publishedContext": context},
         }
         url = f"{self.base}{self.parent}/dataAgents:createSync?dataAgentId={agent_id(variant)}"

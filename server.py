@@ -2,9 +2,9 @@
 
 One entry point, three apps. The app name picks the condition:
 
-    ec_raw      no business definition
-    ec_defined  business definition
-    ec_reuse    business definition + analysis shared within the request
+    sales_raw      no business definition
+    sales_defined  business definition
+    sales_reuse    business definition + analysis shared within the request
 
 Run locally:  uvicorn server:app --port 8081
 """

@@ -1,5 +1,5 @@
-name: ec-analytics-agent
-agent_directory: agents/ec_defined
+name: sales-analytics-agent
+agent_directory: agents/sales_defined
 language: python
 base_template: adk_python
 framework: google-adk

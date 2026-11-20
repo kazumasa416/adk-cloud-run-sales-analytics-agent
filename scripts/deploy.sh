@@ -4,7 +4,7 @@ set -euo pipefail
 
 : "${PROJECT_ID:?Set PROJECT_ID to your Google Cloud project ID.}"
 : "${REGION:=asia-northeast1}"
-: "${SERVICE_NAME:=ec-analytics-agent}"
+: "${SERVICE_NAME:=sales-analytics-agent}"
 : "${ROOT_MODEL:=gemini-4-hydrogen}"
 : "${GOOGLE_CLOUD_LOCATION:=global}"
 : "${DATA_AGENT_LOCATION:=us}"

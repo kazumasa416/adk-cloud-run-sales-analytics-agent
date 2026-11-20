@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Send one question to a deployed (or local) agent service and print what came back.
 
-    python scripts/ask.py ec_defined "質問"            # SERVICE_URL must be set
-    python scripts/ask.py ec_raw ec_defined ec_reuse    # default question, several conditions
+    python scripts/ask.py sales_defined "質問"            # SERVICE_URL must be set
+    python scripts/ask.py sales_raw sales_defined sales_reuse    # default question, several conditions
 
 Uses `gcloud auth print-identity-token` for a private Cloud Run service
 (set GCLOUD_ACCOUNT to pick an account).
@@ -17,7 +17,7 @@ import sys
 import time
 import urllib.request
 
-QUESTION = "2026年7月と比べて8月の粗利益が最も減ったカテゴリと、8月から7月を引いた差額を教えてください。"
+QUESTION = "10月の売上は、9月と比べてどうでしたか？"
 
 
 def identity_token() -> str:
@@ -60,8 +60,8 @@ def ask(base: str, app: str, question: str, headers: dict) -> dict:
 
 def main() -> None:
     args = sys.argv[1:]
-    apps = [a for a in args if a.startswith("ec_")] or ["ec_defined"]
-    rest = [a for a in args if not a.startswith("ec_")]
+    apps = [a for a in args if a.startswith("sales_")] or ["sales_defined"]
+    rest = [a for a in args if not a.startswith("sales_")]
     question = rest[0] if rest else QUESTION
     base = os.environ.get("SERVICE_URL", "http://localhost:8081").rstrip("/")
     headers = {"Content-Type": "application/json"}

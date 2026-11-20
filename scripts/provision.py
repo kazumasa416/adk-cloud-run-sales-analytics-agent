@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Create the BigQuery dataset, the five tables and the two Data Agents.
+"""Create the BigQuery dataset, the orders table and the two Data Agents.
 
 Run once per project, as a user who owns the project:
 
     PROJECT_ID=my-project python scripts/provision.py
 
 Uses the gcloud CLI for access tokens (set GCLOUD_ACCOUNT to pick an account).
-Safe to rerun: tables are recreated, existing Data Agents are kept.
+Safe to rerun: the table is recreated, existing Data Agents are kept.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ec import data  # noqa: E402
-from ec.data_agent import VARIANTS, DataAgentClient  # noqa: E402
+from sales import data  # noqa: E402
+from sales.data_agent import VARIANTS, DataAgentClient  # noqa: E402
 
 APIS = [
     "bigquery.googleapis.com",
@@ -63,7 +63,7 @@ def bq(method: str, path: str, payload: dict | None, project: str) -> dict | Non
 
 def main() -> None:
     project = os.environ.get("PROJECT_ID") or sys.exit("Set PROJECT_ID.")
-    dataset = os.getenv("BQ_DATASET", "ec_demo")
+    dataset = os.getenv("BQ_DATASET", "sales_demo")
     bq_location = os.getenv("BQ_LOCATION", "US")
     agent_location = os.getenv("DATA_AGENT_LOCATION", "us")
 
@@ -74,11 +74,11 @@ def main() -> None:
     created = bq("POST", f"/projects/{project}/datasets", {
         "datasetReference": {"projectId": project, "datasetId": dataset},
         "location": bq_location,
-        "description": "Synthetic e-commerce data for adk-cloud-run-ec-analytics-agent",
+        "description": "Synthetic sales data for the ADK on Cloud Run demo",
     }, project)
     print("Dataset created." if created else "Dataset already exists.")
 
-    print("Loading the five tables and the view...")
+    print("Loading the orders table...")
     result = bq("POST", f"/projects/{project}/queries", {
         "query": data.seed_sql(project, dataset),
         "useLegacySql": False,
@@ -88,14 +88,12 @@ def main() -> None:
     if not result or not result.get("jobComplete"):
         raise SystemExit("The seed script did not finish: " + json.dumps(result)[:600])
     check = bq("POST", f"/projects/{project}/queries", {
-        "query": " UNION ALL ".join(
-            f"SELECT '{t}' AS t, COUNT(*) AS n FROM `{project}.{dataset}.{t}`" for t in data.FIELDS
-        ) + " ORDER BY t",
+        "query": f"SELECT status, COUNT(*) AS n FROM `{project}.{dataset}.{data.TABLE}` GROUP BY status ORDER BY status",
         "useLegacySql": False,
         "location": bq_location,
     }, project)
     counts = {row["f"][0]["v"]: int(row["f"][1]["v"]) for row in check.get("rows", [])}
-    print("Row counts:", counts, "total", sum(counts.values()))
+    print("Rows by status:", counts, "total", sum(counts.values()))
 
     client = DataAgentClient(project, agent_location, token)
     for variant in VARIANTS:

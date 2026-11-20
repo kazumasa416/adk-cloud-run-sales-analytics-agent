@@ -33,7 +33,7 @@ def seconds(span: dict) -> float:
 
 def main() -> None:
     project = os.environ.get("PROJECT_ID") or sys.exit("Set PROJECT_ID.")
-    service = os.getenv("SERVICE_NAME", "ec-analytics-agent")
+    service = os.getenv("SERVICE_NAME", "sales-analytics-agent")
     count = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     rows = gcloud(
         "logging", "read",
@@ -64,9 +64,9 @@ def main() -> None:
                 continue
             labels = span.get("labels") or {}
             shown = {
-                key.replace("gen_ai.usage.", "").replace("ec.", ""): str(value)[:40]
+                key.replace("gen_ai.usage.", "").replace("sales.", ""): str(value)[:40]
                 for key, value in labels.items()
-                if key.startswith("ec.") and key != "ec.question" or key in ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens")
+                if key.startswith("sales.") and key != "sales.question" or key in ("gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens")
             }
             print("  " + "  " * depth(span) + f"{span['name'][:46]:46} {seconds(span):6.2f}s  " + (json.dumps(shown, ensure_ascii=False) if shown else ""))
         if os.getenv("SAVE_DIR"):
