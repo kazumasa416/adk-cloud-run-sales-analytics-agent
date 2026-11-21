@@ -79,7 +79,14 @@ def main() -> None:
             print("ROWS:", json.dumps(table.get("rows"), ensure_ascii=False)[:400])
         tokens = [(u.get("promptTokenCount"), u.get("candidatesTokenCount"), u.get("thoughtsTokenCount")) for u in result["usage"]]
         print("Root model tokens (in, out, thinking):", tokens)
-        print("ANSWER:", result["answer"].replace("\n", " ")[:500])
+        try:
+            answer = json.loads(result["answer"])
+            before, after = answer["previous_month_jpy"], answer["current_month_jpy"]
+            print(f"COUNTED: {answer['counted_orders']}")
+            print(f"SALES: {before:,} -> {after:,}  ({after - before:+,} JPY, {(after - before) / before * 100:+.1f}%)")
+            print("SUMMARY:", answer["summary_ja"].replace("\n", " ")[:400])
+        except (ValueError, KeyError, TypeError, ZeroDivisionError):
+            print("ANSWER:", result["answer"].replace("\n", " ")[:500])
         if os.getenv("SAVE_DIR"):
             with open(os.path.join(os.environ["SAVE_DIR"], f"{app}-{int(time.time())}.json"), "w", encoding="utf-8") as fh:
                 json.dump(result, fh, ensure_ascii=False, indent=1)

@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>売上分析エージェント：同じ質問を 3 条件で</title>
+<style>
+  :root {
+    --ink: #1e1e1e; --muted: #5f6368; --line: #dadce0; --bg: #f1f3f4; --card: #ffffff;
+    --blue: #c3ecf6; --green: #ccf6c5; --yellow: #feefc3; --pink: #f8d8d8;
+    --up: #188038; --down: #b3261e; --accent: #1a73e8;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.6 "Google Sans", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif; }
+  header { padding: 20px 24px 12px; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .ask { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .ask input { flex: 1 1 420px; font: inherit; font-size: 18px; font-weight: 700; padding: 10px 14px;
+               border: 1.5px solid var(--ink); border-radius: 12px; background: var(--card); }
+  button { font: inherit; font-weight: 700; padding: 10px 18px; border: 1.5px solid var(--ink);
+           border-radius: 12px; background: var(--ink); color: #fff; cursor: pointer; }
+  button.ghost { background: var(--card); color: var(--ink); }
+  button:disabled { opacity: .45; cursor: default; }
+  main { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 8px 24px 24px; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  .col { background: var(--card); border: 1.5px solid var(--ink); border-radius: 18px; padding: 16px;
+         display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .col h2 { margin: 0; font-size: 17px; }
+  .changed { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .c1 .changed { background: var(--line); } .c2 .changed { background: var(--yellow); } .c3 .changed { background: var(--green); }
+  .setup { margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+  .setup b { color: var(--ink); }
+  .status { font-size: 13px; color: var(--muted); min-height: 21px; }
+  .status.run::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+                        border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%;
+                        animation: spin .8s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .headline { border-radius: 14px; padding: 12px 14px; background: var(--bg); min-height: 92px; }
+  .headline .big { font-size: 40px; font-weight: 800; line-height: 1.1; }
+  .headline .big.up { color: var(--up); } .headline .big.down { color: var(--down); }
+  .headline .what { font-size: 13px; color: var(--muted); }
+  .headline .what b { color: var(--ink); }
+  .headline .pct { font-size: 22px; font-weight: 700; }
+  .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .metric { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+  .metric .k { font-size: 12px; color: var(--muted); }
+  .metric .v { font-size: 18px; font-weight: 700; }
+  .metric .d { font-size: 12px; color: var(--muted); }
+  .metric.warn { background: var(--pink); border-color: var(--pink); }
+  .metric.good { background: var(--green); border-color: var(--green); }
+  details { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+  summary { cursor: pointer; font-weight: 700; font-size: 13px; }
+  pre { margin: 8px 0 0; font: 12px/1.5 "Roboto Mono", ui-monospace, Menlo, monospace; white-space: pre-wrap;
+        overflow-wrap: anywhere; }
+  pre mark { background: var(--yellow); padding: 0 2px; }
+  .answer { font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 8px; }
+  .answer code { font: 12px "Roboto Mono", ui-monospace, Menlo, monospace; background: var(--bg); padding: 0 3px; border-radius: 4px; }
+  a { color: var(--accent); }
+  .err { color: var(--up); font-weight: 700; white-space: pre-wrap; overflow-wrap: anywhere; }
+  footer { padding: 0 24px 28px; color: var(--muted); font-size: 13px; }
+  footer table { border-collapse: collapse; margin-top: 6px; background: var(--card); border-radius: 12px; overflow: hidden; }
+  footer td, footer th { padding: 6px 14px; text-align: right; border-bottom: 1px solid var(--line); }
+  footer td:first-child, footer th:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<header>
+  <h1>同じ質問を、条件を 1 つずつ変えて聞く</h1>
+  <div class="sub">ADK の Root Agent → Data Agent → BigQuery（orders テーブル 1 つ、88 行）。データと数値は説明用の架空のものです。</div>
+  <div class="ask">
+    <input id="question" value="10月の売上は、9月と比べてどうでしたか？" aria-label="質問">
+    <button id="run-all">① → ② → ③ の順に実行</button>
+    <button id="reset" class="ghost">クリア</button>
+  </div>
+</header>
+
+<main id="columns"></main>
+
+<footer>
+  <details>
+    <summary>このデータを手で数えると</summary>
+    <table>
+      <tr><th>数えた注文</th><th>9 月</th><th>10 月</th><th>増減</th></tr>
+      <tr><td>検収済だけ（この会社の「売上」）</td><td>12,000,000 円</td><td>10,560,000 円</td><td>−12.0%</td></tr>
+      <tr><td>受注＋検収済</td><td>12,600,000 円</td><td>13,530,000 円</td><td>+7.4%</td></tr>
+      <tr><td>全部（取消も含む）</td><td>13,500,000 円</td><td>14,190,000 円</td><td>+5.1%</td></tr>
+    </table>
+  </details>
+</footer>
+
+<script>
+const CONDITIONS = [
+  { app: "sales_raw", cls: "c1", title: "① まず聞く", changed: "出発点",
+    setup: ["業務定義：<b>なし</b>", "分析結果：利用箇所ごとに取得"] },
+  { app: "sales_defined", cls: "c2", title: "② 会社の定義を渡す", changed: "変えたのは業務定義だけ",
+    setup: ["業務定義：<b>あり</b>（売上＝検収済の合計）", "分析結果：利用箇所ごとに取得"] },
+  { app: "sales_reuse", cls: "c3", title: "③ 分析結果を共有する", changed: "変えたのは取得の仕方だけ",
+    setup: ["業務定義：あり", "分析結果：<b>同じリクエスト内で共有</b>"] },
+];
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const $ = (sel, root = document) => root.querySelector(sel);
+
+function column(c) {
+  const el = document.createElement("section");
+  el.className = "col " + c.cls;
+  el.id = c.app;
+  el.innerHTML = `
+    <div><span class="changed">${esc(c.changed)}</span></div>
+    <h2>${esc(c.title)}</h2>
+    <ul class="setup">${c.setup.map((s) => `<li>${s}</li>`).join("")}</ul>
+    <div><button class="ghost run">この条件で実行</button></div>
+    <div class="status"></div>
+    <div class="result"></div>`;
+  $(".run", el).addEventListener("click", () => run(c));
+  return el;
+}
+
+// The month-over-month change as the agent wrote it: the first signed yen
+// difference and the first signed percentage in the answer text.
+function headline(text) {
+  const result = {};
+  // "+930,000円" / "-1,440,000円", or worded: "930,000円の増加" / "1,440,000円減少".
+  const signed = text.match(/([+\-−])\s?(\d[\d,]{3,})\s?円/);
+  const worded = text.match(/(\d[\d,]{3,})\s?円\s?の?\s?(増加|減少)/);
+  const yen = signed || (worded && [worded[0], worded[2] === "増加" ? "+" : "-", worded[1]]);
+  if (yen) {
+    const amount = Number(yen[2].replace(/,/g, ""));
+    result.up = yen[1] === "+";
+    result.value = (result.up ? "+" : "−") + (amount % 10000 === 0 ? (amount / 10000).toLocaleString() + " 万円" : amount.toLocaleString() + " 円");
+  }
+  const pct = text.match(/([+\-−])\s?(\d+(?:\.\d+)?)\s?[%％]/);
+  if (pct) {
+    const up = pct[1] === "+";
+    result.pct = (up ? "+" : "−") + pct[2] + "%";
+    if (!result.value) { result.value = result.pct; result.up = up; result.pct = ""; }
+  }
+  return result.value ? result : null;
+}
+
+// Just enough Markdown for the answers: bold and inline code. Everything is escaped first.
+function formatAnswer(text) {
+  return esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+// The agent answers in a fixed JSON shape. The difference and the rate are
+// calculated here, from the two amounts it copied out of the evidence.
+function structured(text) {
+  try {
+    const body = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "");
+    const a = JSON.parse(body);
+    if (!Number.isFinite(a.previous_month_jpy) || !Number.isFinite(a.current_month_jpy)) return null;
+    const diff = a.current_month_jpy - a.previous_month_jpy;
+    const man = (yen) => (yen % 10000 === 0 ? (yen / 10000).toLocaleString() + " 万円" : yen.toLocaleString() + " 円");
+    const rate = a.previous_month_jpy ? (diff / a.previous_month_jpy) * 100 : null;
+    return {
+      up: diff >= 0,
+      value: (diff >= 0 ? "+" : "−") + man(Math.abs(diff)),
+      pct: rate === null ? "" : (rate >= 0 ? "+" : "−") + Math.abs(rate).toFixed(1) + "%",
+      counted: a.counted_orders || "",
+      detail: `${a.previous_month || "前月"} ${man(a.previous_month_jpy)} → ${a.current_month || "当月"} ${man(a.current_month_jpy)}`,
+      summary: a.summary_ja || "",
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+function highlightSql(sql) {
+  return esc(sql).split("\n").map((line) => /status/i.test(line) ? `<mark>${line}</mark>` : line).join("\n");
+}
+
+function render(c, r) {
+  const tool = r.tool || {};
+  const calls = tool.data_agent_calls;
+  const secs = (tool.data_agent_seconds || []).map((s) => s.toFixed(1) + " 秒").join(" ＋ ");
+  const tokensIn = r.usage.reduce((a, u) => a + (u.promptTokenCount || 0), 0);
+  const tokensOut = r.usage.reduce((a, u) => a + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 0);
+  const fixed = structured(r.answer || "");
+  const h = fixed || headline(r.answer || "") || headline(tool.answer || "");
+  const same = tool.reviewed_same_evidence;
+  const trace = tool.trace_id && tool.project
+    ? `https://console.cloud.google.com/traces/explorer;traceId=${tool.trace_id}?project=${tool.project}` : "";
+  $(".result", $("#" + c.app)).innerHTML = `
+    <div class="headline">
+      ${h ? `<div class="big ${h.up ? "up" : "down"}">${esc(h.value)}${h.pct ? ` <span class="pct">${esc(h.pct)}</span>` : ""}</div>
+             <div class="what">${fixed ? `数えた注文：<b>${esc(fixed.counted)}</b><br>${esc(fixed.detail)}`
+                                       : "回答の文章から読み取った前月との差"}</div>`
+          : `<div class="what">回答から前月との差を読み取れませんでした。下の回答を見てください。</div>`}
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="k">全体の時間</div><div class="v">${r.seconds.toFixed(1)} 秒</div></div>
+      <div class="metric ${calls > 1 ? "warn" : "good"}"><div class="k">Data Agent の呼び出し</div>
+        <div class="v">${calls ?? "—"} 回</div><div class="d">${esc(secs)}</div></div>
+      <div class="metric"><div class="k">Root Agent のトークン</div>
+        <div class="v">${tokensIn.toLocaleString()} / ${tokensOut.toLocaleString()}</div><div class="d">入力 / 出力（推論を含む）</div></div>
+      <div class="metric ${same === false ? "warn" : same ? "good" : ""}"><div class="k">検査した結果は回答と同じか</div>
+        <div class="v">${same === true ? "同じ" : same === false ? "別の結果" : "—"}</div></div>
+    </div>
+    <details open><summary>エージェントの回答</summary><div class="answer">${formatAnswer((fixed && fixed.summary) || r.answer || "(回答なし)")}</div></details>
+    <details><summary>Data Agent が実行した SQL</summary><pre>${(tool.sql || []).map(highlightSql).join("\n\n") || "(なし)"}</pre></details>
+    <details><summary>集計結果（表）</summary><pre>${esc(JSON.stringify(((tool.tables || [])[0] || {}).rows || [], null, 1))}</pre></details>
+    ${trace ? `<div><a href="${trace}" target="_blank" rel="noopener">Cloud Trace でこの実行を開く</a></div>` : ""}
+    ${r.errors.length ? `<div class="err">${esc(r.errors.join("\n"))}</div>` : ""}`;
+}
+
+async function run(c) {
+  const col = $("#" + c.app), status = $(".status", col), button = $(".run", col);
+  const question = $("#question").value.trim();
+  if (!question) return;
+  button.disabled = true;
+  $(".result", col).innerHTML = "";
+  const started = performance.now();
+  const elapsed = () => ((performance.now() - started) / 1000);
+  let phase = "Root Agent が考えています";
+  status.className = "status run";
+  const tick = setInterval(() => { status.textContent = `${phase}… ${elapsed().toFixed(0)} 秒`; }, 250);
+  const r = { answer: "", tool: null, usage: [], errors: [], seconds: 0 };
+  try {
+    const session = "s" + Date.now() + Math.random().toString(16).slice(2, 8);
+    const created = await fetch(`apps/${c.app}/users/demo/sessions/${session}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    if (!created.ok) throw new Error(`セッションを作成できません（HTTP ${created.status}）`);
+    const response = await fetch("run_sse", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appName: c.app, userId: "demo", sessionId: session,
+                             newMessage: { role: "user", parts: [{ text: question }] } }) });
+    if (!response.ok) throw new Error(`実行できません（HTTP ${response.status}）`);
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const event = JSON.parse(line.slice(5));
+        if (event.error || event.errorMessage) r.errors.push(String(event.error || event.errorMessage));
+        if (event.usageMetadata) r.usage.push(event.usageMetadata);
+        for (const part of (event.content || {}).parts || []) {
+          if (part.functionCall) phase = "Data Agent に分析を頼んでいます";
+          else if (part.functionResponse) { r.tool = part.functionResponse.response; phase = "Root Agent が回答を書いています"; }
+          else if (part.text && !part.thought) r.answer = part.text;
+        }
+      }
+    }
+  } catch (error) {
+    r.errors.push(error.message || String(error));
+  } finally {
+    clearInterval(tick);
+    r.seconds = elapsed();
+    status.className = "status";
+    status.textContent = r.errors.length && !r.answer ? "失敗しました" : `完了（${r.seconds.toFixed(1)} 秒）`;
+    button.disabled = false;
+    render(c, r);
+  }
+}
+
+const main = $("#columns");
+CONDITIONS.forEach((c) => main.appendChild(column(c)));
+$("#run-all").addEventListener("click", async (event) => {
+  event.target.disabled = true;
+  for (const c of CONDITIONS) await run(c);
+  event.target.disabled = false;
+});
+$("#reset").addEventListener("click", () => CONDITIONS.forEach((c) => {
+  $(".result", $("#" + c.app)).innerHTML = ""; $(".status", $("#" + c.app)).textContent = ""; }));
+</script>
+</body>
+</html>

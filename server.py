@@ -15,9 +15,11 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from google.adk.cli.fast_api import get_fast_api_app
 
-AGENTS_DIR = str(Path(__file__).resolve().parent / "agents")
+ROOT = Path(__file__).resolve().parent
+AGENTS_DIR = str(ROOT / "agents")
 
 app: FastAPI = get_fast_api_app(
     agents_dir=AGENTS_DIR,
@@ -26,3 +28,9 @@ app: FastAPI = get_fast_api_app(
     web=False,
     trace_to_cloud=os.getenv("TRACE_TO_CLOUD", "false").lower() == "true",
 )
+
+
+@app.get("/", include_in_schema=False)
+def compare_page() -> FileResponse:
+    """The comparison page: one question, three conditions, side by side."""
+    return FileResponse(ROOT / "web" / "index.html", headers={"Cache-Control": "no-store"})

@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sales import data  # noqa: E402
 from sales.data_agent import extract, published_context  # noqa: E402
-from sales.root import CONDITIONS, build_root_agent, review_evidence  # noqa: E402
+from sales.root import CONDITIONS, SalesAnswer, build_root_agent, review_evidence  # noqa: E402
 
 MESSAGES = [
     {"systemMessage": {"text": {"parts": ["thinking"], "textType": "THOUGHT"}}},
@@ -95,3 +95,12 @@ def test_extract_and_review():
     assert evidence["answer"] == "確定売上は前月比 -12% です" and evidence["sql"] == ["SELECT 1"]
     assert review_evidence(evidence)["passed"] is True
     assert review_evidence(extract([]))["passed"] is False
+
+
+def test_answer_has_a_fixed_shape_and_no_derived_numbers():
+    for condition in CONDITIONS:
+        assert build_root_agent(condition).output_schema is SalesAnswer
+    fields = set(SalesAnswer.model_fields)
+    assert {"counted_orders", "previous_month_jpy", "current_month_jpy", "summary_ja"} <= fields
+    # The difference and the rate are left to code, so the model cannot get them wrong.
+    assert not {f for f in fields if "diff" in f or "rate" in f or "pct" in f}

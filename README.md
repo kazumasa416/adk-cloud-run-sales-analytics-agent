@@ -49,7 +49,8 @@ client -> Cloud Run: agent (private, ID token)
 - `sales/data_agent.py`: Data Agent の定義、作成、質問
 - `sales/data.py`: データと BigQuery への投入 SQL
 - `agents/sales_*/agent.py`: ADK の app
-- `server.py`: ADK API server
+- `server.py`: ADK API server。`/` で比較画面も返す
+- `web/index.html`: 比較画面（1 ファイル、build なし）
 - `semantics/`: 共通の指示と、会社の業務定義
 
 ## 準備
@@ -66,6 +67,19 @@ python scripts/provision.py     # API 有効化、dataset、orders テーブル�
 `gcloud auth application-default login` で deploy 先と同じ account にそろえてください。
 
 ## 実行
+
+### 比較画面
+
+agent service は非公開なので、手元に認証付きの proxy を立てて開きます。
+
+```bash
+gcloud run services proxy sales-analytics-agent --region asia-northeast1 --port 8080
+```
+
+ブラウザで `http://localhost:8080/` を開くと、3 条件を横に並べた画面が出ます。
+「① → ② → ③ の順に実行」で同じ質問を順に送り、回答、Data Agent の呼び出し回数、所要時間、token 数、実行された SQL を見比べられます。各列の「Cloud Trace でこの実行を開く」から、その実行の trace に飛べます。
+
+### コマンドから
 
 ```bash
 export SERVICE_URL="$(gcloud run services describe sales-analytics-agent --region asia-northeast1 --format='value(status.url)')"
@@ -101,6 +115,5 @@ Google Cloud には接続しません。手計算の合計、条件ごとの定�
 | `sales_reuse` | 検収済だけを合計し、−1,440,000 円（−12%） | 18.2 秒 | 1 回 |
 
 - `sales_defined` の 76.6 秒のうち 51.8 秒は、Root Agent の最後の model 呼び出しでした（Cloud Trace で確認）。Data Agent の 2 回は合わせて 22.7 秒です
-- 画面（比較 UI）はまだありません。`scripts/ask.py` で呼び出します
 
 データ構成の出発点は [Data & AI Summit '26 Fall ハンズオン](https://github.com/mbk-digital/data-ai-summit-2026-fall-handson)（Apache License 2.0）です。
