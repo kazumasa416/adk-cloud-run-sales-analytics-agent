@@ -5,7 +5,8 @@
     PROJECT_ID=my-project python scripts/cleanup.py --yes   # delete
 
 Only resources that carry this demo's mark are deleted: the `orders` table with
-its label, the two Data Agents and the Catalog entry with their description.
+its label, and the Data Agents (one per version of the definition) and the
+Catalog entry with their description.
 The BigQuery dataset and the Cloud Run service are left for you (see README).
 """
 
@@ -20,9 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from provision import bq, token  # noqa: E402
 from sales import data  # noqa: E402
 from sales.catalog import GROUP_ID, TYPE_ID, CatalogClient, catalog_location  # noqa: E402
-from sales.data_agent import VARIANTS, DataAgentClient  # noqa: E402
-
-MARK = "adk-cloud-run-sales-demo"
+from sales.data_agent import MARK, DataAgentClient  # noqa: E402
 
 
 def main() -> None:
@@ -32,12 +31,10 @@ def main() -> None:
     found = []
 
     agents = DataAgentClient(project, os.getenv("DATA_AGENT_LOCATION", "us"), token)
-    for variant in VARIANTS:
-        agent = agents.get(variant)
-        if agent is not None and agent.get("description", "").startswith(MARK):
-            found.append("Data Agent  " + agents.name(variant))
-            if delete:
-                agents._request("DELETE", agents.base + agents.name(variant) + ":deleteSync")
+    for name in agents.created_by_this_demo():
+        found.append("Data Agent  " + name)
+        if delete:
+            agents.delete(name)
 
     catalog = CatalogClient(project, catalog_location(), token)
     group = catalog._request("GET", f"{catalog.parent}/entryGroups/{GROUP_ID}", missing_ok=True)

@@ -78,15 +78,16 @@ def _client() -> DataAgentClient:
 def _definition() -> dict:
     """The business definition and its receipt, read from the Catalog.
 
-    The Data Agent holds its own copy of the definition, given when it was
-    created or last synced. If that copy differs from the Catalog, the two
-    agents would answer under different definitions while the trace shows only
-    one of them. So this fails instead of starting.
+    Each version of the definition has its own Data Agent, created by
+    scripts/sync_definition.py. If no agent holds the text that is in the
+    Catalog now, the two agents would answer under different definitions while
+    the trace shows only one of them. So this fails instead of starting.
     """
     definition = CatalogClient(os.environ["GOOGLE_CLOUD_PROJECT"], catalog_location(), _token).definition()
-    if not holds_definition(_client().get("defined"), definition["body"]):
+    if not holds_definition(_client().get("defined", definition["version"]), definition["body"]):
         raise RuntimeError(
-            "The Catalog definition and the Data Agent's definition differ. Run scripts/sync_definition.py."
+            f"No Data Agent holds definition {definition['version']} that is in the Catalog now. "
+            "Run scripts/sync_definition.py."
         )
     return definition
 
@@ -112,9 +113,11 @@ def build_root_agent(condition: str, client_factory=_client, definition_loader=_
     if condition not in CONDITIONS:
         raise ValueError(f"Unknown condition: {condition}")
     settings = CONDITIONS[condition]
-    # Read once, when the agent is built. A change to the entry takes effect on
-    # the next start, and every request records which version it used.
+    # Read once, when the agent is built. From then on this process uses that
+    # text and the Data Agent of that version, and records the version on every
+    # request. A change to the entry takes effect on the next start.
     definition = definition_loader() if settings["definition"] else None
+    version = definition["version"] if definition else ""
     receipt = {k: definition[k] for k in ("entry", "update_time", "sha256")} if definition else None
 
     async def fetch(question: str) -> dict:
@@ -122,7 +125,9 @@ def build_root_agent(condition: str, client_factory=_client, definition_loader=_
             span.set_attribute("sales.data_agent_variant", settings["variant"])
             started = time.monotonic()
             client = client_factory()
-            messages = await asyncio.to_thread(client.chat, settings["variant"], question)
+            agent = client.name(settings["variant"], version)
+            span.set_attribute("sales.data_agent", agent.rsplit("/", 1)[-1])
+            messages = await asyncio.to_thread(client.chat, agent, question)
             evidence = extract(messages)
             evidence["elapsed_seconds"] = round(time.monotonic() - started, 2)
             span.set_attribute("sales.sql_statements", len(evidence["sql"]))

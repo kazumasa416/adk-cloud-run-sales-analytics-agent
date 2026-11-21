@@ -33,7 +33,7 @@ ADK の Root Agent が Conversational Analytics の Data Agent に分析を頼�
 - 2 条件とも同じ `orders` テーブルを参照します
 - 業務定義（4 行）は Catalog のエントリ `sales-demo/confirmed-sales`（確定売上）に置き、そこから読みます。有無は Data Agent と Root Agent の両方でそろえています
 - Root Agent は起動時に Catalog から定義を読み、どのエントリの、いつ更新された版を使ったかをトレース（`sales.definition_*`）と応答（`definition`）に残します
-- Data Agent は定義の写しを自分で持ちます。エントリを書き換えたら `scripts/sync_definition.py` で両方に反映します（「定義を変えてみる」を参照）
+- Data Agent は定義の写しを自分で持ちます。定義の版（本文の sha256 の先頭 12 桁）ごとに別の Data Agent（`sales-defined-<版>`）を作り、作ったものは書き換えません。Root Agent は、自分が読んだ版の Data Agent にだけ問い合わせます。エントリを書き換えたら `scripts/sync_definition.py` で反映します（「定義を変えてみる」を参照）
 - エントリは `orders` テーブルに紐づけていません。紐づけた用語は「定義なし」の条件にも届く恐れがあるためです
 - どちらの条件でも、Data Agent への依頼は 1 問につき 1 回です。回答はその分析結果から書き、根拠の検査も同じ結果に対して行います
 
@@ -72,6 +72,8 @@ python scripts/provision.py     # API 有効化、dataset、orders テーブル�
 
 - どのコマンドも `PROJECT_ID` の project だけを対象にします。gcloud の既定 project は使いません
 - `provision.py` は、自分が作っていない `orders` テーブルには触りません。同じ名前のテーブルがすでにあると、何も変えずに止まります。そのときは `BQ_DATASET` で別の dataset を指定してください。自分が作ったテーブルを作り直すときだけ `--recreate-table` を付けます
+- `provision.py` は最後にテーブルの行数（88 行）を確かめます。足りないときは、`--recreate-table` を付けて実行し直すよう表示して止まります
+- 既存の Data Agent は、指示文と参照するテーブルの両方が今回の設定と同じときだけ使い回します。同じ project で `BQ_DATASET` を変えて実行すると、以前の dataset を見ている Data Agent が残っているので、対象を表示して止まります。`cleanup.py` で消すか、`DATA_AGENT_ID_RAW`・`DATA_AGENT_ID_DEFINED` で別の名前を指定してください
 - `agents-cli` は gcloud の login より Application Default Credentials を優先します。`gcloud auth application-default login` で deploy 先と同じ account にそろえてください
 - agent service は Compute Engine の既定の service account で動きます。この account が Gemini（Vertex AI）、Data Agent、BigQuery、Catalog の読み取り、Cloud Trace への書き込みを行えることが必要です。別の account で動かすときは `AGENT_SA` で指定します
 
@@ -99,7 +101,7 @@ python scripts/ask.py sales_raw sales_defined   # 同じ質問を 2 条件で
 python scripts/trace.py 3                       # 直近 3 回の Cloud Trace
 ```
 
-`sales_defined` の trace には、使った定義が `sales.definition_entry`、`sales.definition_update_time`、`sales.definition_sha256` として残ります。
+`sales_defined` の trace には、使った定義が `sales.definition_entry`、`sales.definition_update_time`、`sales.definition_sha256` として、問い合わせた Data Agent が `sales.data_agent` として残ります。
 
 ## 定義を変えてみる
 
@@ -109,10 +111,12 @@ Google Cloud コンソールの Catalog で、エントリ「確定売上」（e
 python scripts/sync_definition.py
 ```
 
-Catalog の定義を Data Agent に渡し、Cloud Run の新しい revision を起動して Root Agent にも読ませます。表示される sha256 が、次の実行の trace に残る値と同じになります。
+いまの定義の版に対応する Data Agent を作り（すでにあれば何もしません）、Cloud Run の新しい revision を起動して Root Agent に読ませます。表示される sha256 が、次の実行の trace に残る値と同じになります。
 
-- Root Agent は起動時に、Data Agent が持つ定義と Catalog の定義を照合します。違っていれば起動せず、Cloud Run は前の revision のまま動き続けます
-- `sync_definition.py` を実行するまでは、Catalog を書き換えても回答は変わりません
+- 動いている Root Agent は、起動時に読んだ版と、その版の Data Agent を使い続けます。新しい revision に替わるまで、回答も trace に残る版も前のままです。revision の起動に失敗しても、この組み合わせは崩れません
+- Root Agent は起動時に Catalog を読み、その版の Data Agent があることを確かめます。無ければ起動しません
+- このため、Catalog を書き換えたあと `sync_definition.py` を実行するまでの間に Cloud Run が新しい instance を起動すると、その instance は起動に失敗し、質問に答えられなくなります（古い定義では答えません）。書き換えたら続けて `sync_definition.py` を実行してください
+- 以前の版の Data Agent は残ります。定義を元に戻すと、その版の Data Agent をそのまま使います
 
 ## 片付け
 
@@ -122,7 +126,7 @@ python scripts/cleanup.py --yes    # 削除
 gcloud run services delete sales-analytics-agent --project "$PROJECT_ID" --region asia-northeast1
 ```
 
-`cleanup.py` が削除するのは、`provision.py` が作った `orders` テーブル、Data Agent 2 つ、Catalog のエントリだけです。BigQuery の dataset（`sales_demo`）は残るので、ほかに使っていなければ削除してください。
+`cleanup.py` が削除するのは、`provision.py` と `sync_definition.py` が作った `orders` テーブル、Data Agent（定義の版ごとに 1 つ増えます）、Catalog のエントリだけです。BigQuery の dataset（`sales_demo`）は残るので、ほかに使っていなければ削除してください。
 
 ## 費用と注意
 
@@ -139,11 +143,11 @@ pip install -r requirements.txt -c constraints.txt pytest
 pytest -q
 ```
 
-Google Cloud には接続しません。手計算の合計、条件ごとの定義の有無、定義が Catalog から渡ること、Data Agent への依頼が 1 問につき 1 回であることを確かめます。
+Google Cloud には接続しません。手計算の合計、条件ごとの定義の有無、定義が Catalog から渡ること、定義の版ごとに Data Agent が分かれること、既存の Data Agent を指示文と参照先が同じときだけ使い回すこと、Data Agent への依頼が 1 問につき 1 回であることを確かめます。
 
 ## 確認状況（2026-11-21）
 
-実 project で、2 条件を交互に 5 回ずつ実行した結果です。回答は実行のたびに変わることがあります。
+実 project で、2 条件を交互に 5 回ずつ実行した結果です。回答は実行のたびに変わることがあります。この計測は、定義の版ごとに Data Agent を分ける変更の 1 つ前の commit（`c59831e`）で行いました。変更後は、定義の書き換え・反映・切り戻しで回答と版が入れ替わることだけを確かめています。
 
 | 条件 | 回答（5 回） | 全体 | うち Data Agent |
 |---|---|---|---|

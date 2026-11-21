@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Apply the Catalog definition to both agents and check that they match.
+"""Roll out the definition that is in the Catalog now.
 
 Edit the entry in the Catalog, then run:
 
     PROJECT_ID=my-project python scripts/sync_definition.py
 
 1. Reads the definition from the Catalog.
-2. Gives it to the "defined" Data Agent.
-3. Starts a new Cloud Run revision, so the Root Agent reads it too. The Root
-   Agent refuses to start if the Data Agent holds a different definition, and
-   Cloud Run then keeps serving the previous revision.
+2. Creates a Data Agent for this version of the text (sales-defined-<version>),
+   unless it exists. The agents of earlier versions are left as they are.
+3. Starts a new Cloud Run revision. The Root Agent reads the Catalog when it
+   starts and asks the Data Agent of the same version.
 
-Until step 3 finishes, the running Root Agent still uses the old definition.
+A Root Agent that is already running keeps its own version and that version's
+Data Agent until it is replaced. So if step 3 fails, answers and the version
+recorded for them still match: they are the old ones.
 """
 
 from __future__ import annotations
@@ -41,16 +43,16 @@ def main() -> None:
     token = lambda: gcloud("auth", "print-access-token")  # noqa: E731
 
     definition = CatalogClient(project, catalog_location(), token).definition()
-    version = definition["sha256"][:12]
+    version = definition["version"]
     print(f"Catalog: {definition['entry']}")
     print(f"         updated {definition['update_time']} sha256 {version}")
 
     agents = DataAgentClient(project, os.getenv("DATA_AGENT_LOCATION", "us"), token)
-    changed = agents.set_definition(os.getenv("BQ_DATASET", "sales_demo"), definition["body"])
-    print("Data Agent: " + ("updated" if changed else "already had this definition"))
+    name, created = agents.ensure("defined", os.getenv("BQ_DATASET", "sales_demo"), definition["body"], version)
+    print("Data Agent: " + ("created " if created else "already exists ") + name)
 
     if "--no-restart" in sys.argv[1:]:
-        print("Root Agent: not restarted (--no-restart). It keeps the definition it started with.")
+        print("Root Agent: not restarted (--no-restart). A running one keeps the version it started with.")
         return
     print("Root Agent: starting a new revision...")
     gcloud("run", "services", "update", service, "--project=" + project, "--region=" + region,

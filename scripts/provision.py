@@ -19,6 +19,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -112,15 +113,25 @@ def main() -> None:
     }, project)
     counts = {row["f"][0]["v"]: int(row["f"][1]["v"]) for row in check.get("rows", [])}
     print("Rows by status:", counts, "total", sum(counts.values()))
+    # The table and its rows are created by two statements. If the second one
+    # failed, the labelled table is there but the rows are not.
+    expected = dict(Counter(row[2] for row in data.fixture()))
+    if counts != expected:
+        raise SystemExit(
+            f"The orders table does not hold the {sum(expected.values())} demo rows (expected {expected}). "
+            "Run again with --recreate-table to load them."
+        )
 
     catalog = CatalogClient(project, catalog_location(), token)
     print(("Created " if catalog.ensure_entry(starter_rules()) else "Kept ") + catalog.entry_name)
     definition = catalog.definition()
-    print(f"Definition: updated {definition['update_time']} sha256 {definition['sha256'][:12]}")
+    print(f"Definition: updated {definition['update_time']} sha256 {definition['version']}")
 
     client = DataAgentClient(project, agent_location, token)
     for variant in VARIANTS:
-        name, was_created = client.ensure(variant, dataset, definition["body"])
+        # The "defined" agent is named after the version of the definition it holds.
+        version = definition["version"] if variant == "defined" else ""
+        name, was_created = client.ensure(variant, dataset, definition["body"], version)
         print(("Created " if was_created else "Kept ") + name)
 
 

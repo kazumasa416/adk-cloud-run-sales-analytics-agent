@@ -116,10 +116,13 @@ class CatalogClient:
         body = (overviews[0].get("data", {}).get("content", "") if len(overviews) == 1 else "").strip()
         if not body:
             raise CatalogError(f"{self.entry_name} has no overview text. A local file is not used instead.")
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
         return {
             "entry": entry["name"],
             "title": entry.get("entrySource", {}).get("displayName", ""),
             "update_time": entry.get("updateTime", ""),
-            "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "sha256": digest,
+            # Short form of the hash. Names the Data Agent that holds this text.
+            "version": digest[:12],
             "body": body,
         }

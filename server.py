@@ -24,8 +24,8 @@ ROOT = Path(__file__).resolve().parent
 AGENTS_DIR = str(ROOT / "agents")
 
 # ADK loads an app on its first request. Build the "defined" agent here as well,
-# so a Catalog definition that the Data Agent does not hold stops the server
-# from starting. Cloud Run then keeps serving the previous revision.
+# so a Catalog definition that no Data Agent holds stops the server from
+# starting. Cloud Run then keeps serving the previous revision.
 build_root_agent("defined")
 
 app: FastAPI = get_fast_api_app(

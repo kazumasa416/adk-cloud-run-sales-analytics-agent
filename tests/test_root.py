@@ -9,7 +9,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sales import data  # noqa: E402
 from sales.catalog import CatalogClient  # noqa: E402
-from sales.data_agent import extract, holds_definition, published_context, starter_rules  # noqa: E402
+from sales.data_agent import (  # noqa: E402
+    DataAgentClient, DataAgentError, agent_id, differences, extract, holds_definition, published_context, starter_rules,
+)
 from sales.root import CONDITIONS, SalesAnswer, build_root_agent, review_evidence  # noqa: E402
 
 MESSAGES = [
@@ -21,7 +23,8 @@ MESSAGES = [
 
 
 RECEIPT = {"entry": "projects/p/locations/us/entryGroups/sales-demo/entries/confirmed-sales",
-           "title": "確定売上", "update_time": "2026-11-21T00:00:00Z", "sha256": "a" * 64, "body": starter_rules()}
+           "title": "確定売上", "update_time": "2026-11-21T00:00:00Z", "sha256": "a" * 64, "version": "a" * 12,
+           "body": starter_rules()}
 
 
 def build(condition, **kwargs):
@@ -33,8 +36,11 @@ class FakeClient:
     def __init__(self):
         self.calls = []
 
-    def chat(self, variant, question):
-        self.calls.append((variant, question))
+    def name(self, variant, version=""):
+        return "agents/" + agent_id(variant, version)
+
+    def chat(self, agent, question):
+        self.calls.append((agent, question))
         return MESSAGES
 
 
@@ -109,6 +115,34 @@ def test_the_data_agent_must_hold_the_same_definition_as_the_catalog():
     assert not holds_definition(None, starter_rules())
 
 
+def test_an_existing_data_agent_is_reused_only_for_the_same_definition_and_table():
+    held = {"dataAnalyticsAgent": {"publishedContext": published_context("p", "d", "defined", starter_rules())}}
+    assert differences(held, published_context("p", "d", "defined", starter_rules())) == []
+
+    client = DataAgentClient("p", "us", lambda: "t")
+    requests = []
+
+    def request(method, url, payload=None, timeout=330):
+        requests.append(method)
+        return held
+
+    client._request = request
+    assert client.ensure("defined", "d", starter_rules(), "v1") == (client.name("defined", "v1"), False)
+    # Same instruction, another dataset: the agent would still analyse the old table.
+    with pytest.raises(DataAgentError, match="other tables"):
+        client.ensure("defined", "another_dataset", starter_rules(), "v1")
+    with pytest.raises(DataAgentError, match="different instruction"):
+        client.ensure("defined", "d", starter_rules().replace("検収済", "受注"), "v1")
+    # An existing agent is read, never written.
+    assert set(requests) == {"GET"}
+
+
+def test_each_version_of_the_definition_has_its_own_data_agent():
+    assert agent_id("raw") == "sales-raw"
+    assert agent_id("defined", "4e3bb8903c6d") == "sales-defined-4e3bb8903c6d"
+    assert agent_id("defined", "4e3bb8903c6d") != agent_id("defined", "f13dd5c15ea3")
+
+
 def test_catalog_entry_is_read_into_a_receipt():
     entry = {"name": "projects/p/locations/us/entryGroups/sales-demo/entries/confirmed-sales",
              "updateTime": "2026-11-21T01:02:03Z", "entrySource": {"displayName": "確定売上"},
@@ -119,6 +153,7 @@ def test_catalog_entry_is_read_into_a_receipt():
     got = client.definition()
     assert got["body"] == "検収済だけを数える" and got["update_time"] == "2026-11-21T01:02:03Z"
     assert len(got["sha256"]) == 64 and got["entry"].endswith("/entries/confirmed-sales")
+    assert got["version"] == got["sha256"][:12]
 
 
 def test_the_data_agent_is_asked_once_per_question():
@@ -126,7 +161,9 @@ def test_the_data_agent_is_asked_once_per_question():
     for condition in CONDITIONS:
         # The tool runs twice in run_tool; the second run reuses the first result.
         client, result, again = run_tool(condition)
-        assert client.calls == [(condition, data.QUESTION)]
+        # "defined" asks the Data Agent named after the version of the definition it read.
+        agent = {"raw": "agents/sales-raw", "defined": "agents/sales-defined-" + "a" * 12}[condition]
+        assert client.calls == [(agent, data.QUESTION)]
         assert result["review"]["passed"] is True and again["note"]
         assert result["answer"] == "確定売上は前月比 -12% です"
 

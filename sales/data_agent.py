@@ -8,6 +8,12 @@ itself comes from the Catalog (see sales/catalog.py):
     defined  orders table, business definition
 
 Keeping the data source identical is what makes the comparison fair.
+
+A "defined" agent is never rewritten. Each version of the definition gets its
+own agent, named after the hash of the text (sales-defined-<version>). A Root
+Agent that started with one version keeps asking the agent of that version, so
+an answer and the version recorded for it cannot drift apart while a new
+definition is being rolled out.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ HOSTS = {
 }
 TABLES = ["orders"]
 VARIANTS = ("raw", "defined")
+MARK = "adk-cloud-run-sales-demo"
 DISPLAY_NAMES = {"raw": "売上分析（業務定義なし）", "defined": "売上分析（業務定義あり）"}
 
 
@@ -61,14 +68,35 @@ def published_context(project: str, dataset: str, variant: str, rules: str = "")
     }
 
 
+def _published(agent: dict | None) -> dict:
+    return (agent or {}).get("dataAnalyticsAgent", {}).get("publishedContext", {})
+
+
+def _tables(context: dict) -> set[tuple]:
+    references = context.get("datasourceReferences", {}).get("bq", {}).get("tableReferences", [])
+    return {(r.get("projectId"), r.get("datasetId"), r.get("tableId")) for r in references}
+
+
 def holds_definition(agent: dict | None, rules: str) -> bool:
     """True when the "defined" Data Agent was given exactly this definition."""
-    published = (agent or {}).get("dataAnalyticsAgent", {}).get("publishedContext", {})
-    return published.get("systemInstruction") == baseline_instruction() + "\n\n" + rules.strip()
+    return _published(agent).get("systemInstruction") == baseline_instruction() + "\n\n" + rules.strip()
 
 
-def agent_id(variant: str) -> str:
-    return os.getenv(f"DATA_AGENT_ID_{variant.upper()}", f"sales-{variant}")
+def differences(agent: dict, context: dict) -> list[str]:
+    """What an existing agent holds that differs from `context`. Empty when it can be reused."""
+    published, found = _published(agent), []
+    if published.get("systemInstruction") != context["systemInstruction"]:
+        found.append("a different instruction")
+    if _tables(published) != _tables(context):
+        tables = ", ".join(sorted(".".join(str(part) for part in table) for table in _tables(published)))
+        found.append(f"other tables ({tables or 'none'})")
+    return found
+
+
+def agent_id(variant: str, version: str = "") -> str:
+    """`version` is the short hash of the definition. Only "defined" has one."""
+    base = os.getenv(f"DATA_AGENT_ID_{variant.upper()}", f"sales-{variant}")
+    return f"{base}-{version}" if version else base
 
 
 class DataAgentClient:
@@ -82,8 +110,8 @@ class DataAgentClient:
         self.base = f"https://{HOSTS[location]}/v1/"
         self._token = token
 
-    def name(self, variant: str) -> str:
-        return f"{self.parent}/dataAgents/{agent_id(variant)}"
+    def name(self, variant: str, version: str = "") -> str:
+        return f"{self.parent}/dataAgents/{agent_id(variant, version)}"
 
     def _request(self, method: str, url: str, payload: dict | None = None, timeout: int = 330):
         request = urllib.request.Request(
@@ -104,57 +132,61 @@ class DataAgentClient:
             body = exc.read().decode("utf-8", "replace")[:2000]
             raise DataAgentError(f"HTTP {exc.code} from {method} {url.split('?')[0]}: {body}") from exc
 
-    def get(self, variant: str) -> dict | None:
+    def get(self, variant: str, version: str = "") -> dict | None:
         try:
-            return self._request("GET", self.base + self.name(variant))
+            return self._request("GET", self.base + self.name(variant, version))
         except DataAgentError as exc:
             if "HTTP 404" in str(exc):
                 return None
             raise
 
-    def ensure(self, variant: str, dataset: str, rules: str = "") -> tuple[str, bool]:
-        """Create the agent when missing. Returns (resource name, created)."""
+    def ensure(self, variant: str, dataset: str, rules: str = "", version: str = "") -> tuple[str, bool]:
+        """Create the agent when missing. Returns (resource name, created).
+
+        An existing agent is reused only when it holds this instruction and
+        looks at this dataset's table. It is never rewritten.
+        """
         context = published_context(self.project, dataset, variant, rules)
-        existing = self.get(variant)
+        name = self.name(variant, version)
+        existing = self.get(variant, version)
         if existing is not None:
-            published = existing.get("dataAnalyticsAgent", {}).get("publishedContext", {})
-            if published.get("systemInstruction") != context["systemInstruction"]:
+            found = differences(existing, context)
+            if found:
                 raise DataAgentError(
-                    f"{self.name(variant)} exists with a different instruction. "
-                    "Delete it or set DATA_AGENT_ID_" + variant.upper() + " to a new id."
+                    f"{name} exists with {' and '.join(found)}. Nothing was changed. "
+                    f"Delete it (scripts/cleanup.py) or set DATA_AGENT_ID_{variant.upper()} to a new id."
                 )
-            return self.name(variant), False
+            return name, False
         payload = {
-            "name": self.name(variant),
-            "displayName": DISPLAY_NAMES[variant],
-            "description": "adk-cloud-run-sales-demo:" + variant,
+            "name": name,
+            "displayName": DISPLAY_NAMES[variant] + (f" {version}" if version else ""),
+            "description": MARK + ":" + variant,
             "dataAnalyticsAgent": {"publishedContext": context},
         }
-        url = f"{self.base}{self.parent}/dataAgents:createSync?dataAgentId={agent_id(variant)}"
+        url = f"{self.base}{self.parent}/dataAgents:createSync?dataAgentId={agent_id(variant, version)}"
         self._request("POST", url, payload)
-        return self.name(variant), True
+        return name, True
 
-    def set_definition(self, dataset: str, rules: str) -> bool:
-        """Give the "defined" agent this definition. Returns False when it already had it."""
-        existing = self.get("defined")
-        if existing is None:
-            raise DataAgentError(self.name("defined") + " does not exist. Run scripts/provision.py first.")
-        if holds_definition(existing, rules):
-            return False
-        context = published_context(self.project, dataset, "defined", rules)
-        mask = "data_analytics_agent.published_context"
-        url = f"{self.base}{self.name('defined')}:updateSync?updateMask={mask}"
-        self._request("PATCH", url, {"name": self.name("defined"), "dataAnalyticsAgent": {"publishedContext": context}})
-        if not holds_definition(self.get("defined"), rules):
-            raise DataAgentError("The Data Agent did not take the new definition.")
-        return True
+    def created_by_this_demo(self) -> list[str]:
+        """Resource names of every Data Agent in the project that carries this demo's mark."""
+        names, page = [], ""
+        while True:
+            url = f"{self.base}{self.parent}/dataAgents?pageSize=100" + (f"&pageToken={page}" if page else "")
+            response = self._request("GET", url) or {}
+            names += [a["name"] for a in response.get("dataAgents", []) if a.get("description", "").startswith(MARK)]
+            page = response.get("nextPageToken", "")
+            if not page:
+                return names
 
-    def chat(self, variant: str, question: str) -> list[dict]:
-        """Ask one question. The streaming response is one JSON array at EOF."""
+    def delete(self, name: str) -> None:
+        self._request("DELETE", self.base + name + ":deleteSync")
+
+    def chat(self, agent: str, question: str) -> list[dict]:
+        """Ask the agent with this resource name one question. The streaming response is one JSON array at EOF."""
         payload = {
             "parent": self.parent,
             "messages": [{"userMessage": {"text": question}}],
-            "dataAgentContext": {"dataAgent": self.name(variant)},
+            "dataAgentContext": {"dataAgent": agent},
         }
         messages = self._request("POST", f"{self.base}{self.parent}:chat", payload)
         return messages if isinstance(messages, list) else [messages]
