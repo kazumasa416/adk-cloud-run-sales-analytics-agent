@@ -8,6 +8,7 @@ set -euo pipefail
 : "${ROOT_MODEL:=gemini-4-hydrogen}"
 : "${GOOGLE_CLOUD_LOCATION:=global}"
 : "${DATA_AGENT_LOCATION:=us}"
+: "${CATALOG_LOCATION:=us}"
 : "${MAX_INSTANCES:=1}"
 
 command -v agents-cli >/dev/null || {
@@ -20,7 +21,7 @@ AGENT_SA="${AGENT_SA:-${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
 
 ENV_VARS="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
 ENV_VARS="${ENV_VARS},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},ROOT_MODEL=${ROOT_MODEL}"
-ENV_VARS="${ENV_VARS},DATA_AGENT_LOCATION=${DATA_AGENT_LOCATION}"
+ENV_VARS="${ENV_VARS},DATA_AGENT_LOCATION=${DATA_AGENT_LOCATION},CATALOG_LOCATION=${CATALOG_LOCATION}"
 # Cloud Run forwards a mostly-unsampled trace context. Without always_on the
 # default parent-based sampler drops every agent span.
 ENV_VARS="${ENV_VARS},TRACE_TO_CLOUD=true,OTEL_TRACES_SAMPLER=always_on"

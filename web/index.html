@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>売上分析エージェント：同じ質問を 3 条件で</title>
+<title>売上分析エージェント：同じ質問を 2 条件で</title>
 <style>
   :root {
     --ink: #1e1e1e; --muted: #5f6368; --line: #dadce0; --bg: #f1f3f4; --card: #ffffff;
@@ -23,13 +23,13 @@
            border-radius: 12px; background: var(--ink); color: #fff; cursor: pointer; }
   button.ghost { background: var(--card); color: var(--ink); }
   button:disabled { opacity: .45; cursor: default; }
-  main { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 8px 24px 24px; }
+  main { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 8px 24px 24px; }
   @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
   .col { background: var(--card); border: 1.5px solid var(--ink); border-radius: 18px; padding: 16px;
          display: flex; flex-direction: column; gap: 12px; min-width: 0; }
   .col h2 { margin: 0; font-size: 17px; }
   .changed { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-  .c1 .changed { background: var(--line); } .c2 .changed { background: var(--yellow); } .c3 .changed { background: var(--green); }
+  .c1 .changed { background: var(--line); } .c2 .changed { background: var(--yellow); }
   .setup { margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
   .setup b { color: var(--ink); }
   .status { font-size: 13px; color: var(--muted); min-height: 21px; }
@@ -67,11 +67,11 @@
 </head>
 <body>
 <header>
-  <h1>同じ質問を、条件を 1 つずつ変えて聞く</h1>
+  <h1>同じ質問を、業務定義なし・ありで聞く</h1>
   <div class="sub">ADK の Root Agent → Data Agent → BigQuery（orders テーブル 1 つ、88 行）。データと数値は説明用の架空のものです。</div>
   <div class="ask">
     <input id="question" value="10月の売上は、9月と比べてどうでしたか？" aria-label="質問">
-    <button id="run-all">① → ② → ③ の順に実行</button>
+    <button id="run-all">① → ② の順に実行</button>
     <button id="reset" class="ghost">クリア</button>
   </div>
 </header>
@@ -93,11 +93,9 @@
 <script>
 const CONDITIONS = [
   { app: "sales_raw", cls: "c1", title: "① まず聞く", changed: "出発点",
-    setup: ["業務定義：<b>なし</b>", "分析結果：利用箇所ごとに取得"] },
+    setup: ["業務定義：<b>なし</b>"] },
   { app: "sales_defined", cls: "c2", title: "② 会社の定義を渡す", changed: "変えたのは業務定義だけ",
-    setup: ["業務定義：<b>あり</b>（売上＝検収済の合計）", "分析結果：利用箇所ごとに取得"] },
-  { app: "sales_reuse", cls: "c3", title: "③ 分析結果を共有する", changed: "変えたのは取得の仕方だけ",
-    setup: ["業務定義：あり", "分析結果：<b>同じリクエスト内で共有</b>"] },
+    setup: ["業務定義：<b>あり</b>（売上＝検収済の合計）"] },
 ];
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -174,13 +172,12 @@ function highlightSql(sql) {
 
 function render(c, r) {
   const tool = r.tool || {};
-  const calls = tool.data_agent_calls;
-  const secs = (tool.data_agent_seconds || []).map((s) => s.toFixed(1) + " 秒").join(" ＋ ");
+  const secs = tool.data_agent_seconds;
+  const review = (tool.review || {}).passed;
   const tokensIn = r.usage.reduce((a, u) => a + (u.promptTokenCount || 0), 0);
   const tokensOut = r.usage.reduce((a, u) => a + (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0), 0);
   const fixed = structured(r.answer || "");
   const h = fixed || headline(r.answer || "") || headline(tool.answer || "");
-  const same = tool.reviewed_same_evidence;
   const trace = tool.trace_id && tool.project
     ? `https://console.cloud.google.com/traces/explorer;traceId=${tool.trace_id}?project=${tool.project}` : "";
   $(".result", $("#" + c.app)).innerHTML = `
@@ -192,12 +189,12 @@ function render(c, r) {
     </div>
     <div class="metrics">
       <div class="metric"><div class="k">全体の時間</div><div class="v">${r.seconds.toFixed(1)} 秒</div></div>
-      <div class="metric ${calls > 1 ? "warn" : "good"}"><div class="k">Data Agent の呼び出し</div>
-        <div class="v">${calls ?? "—"} 回</div><div class="d">${esc(secs)}</div></div>
+      <div class="metric"><div class="k">うち Data Agent の分析</div>
+        <div class="v">${Number.isFinite(secs) ? secs.toFixed(1) + " 秒" : "—"}</div></div>
       <div class="metric"><div class="k">Root Agent のトークン</div>
         <div class="v">${tokensIn.toLocaleString()} / ${tokensOut.toLocaleString()}</div><div class="d">入力 / 出力（推論を含む）</div></div>
-      <div class="metric ${same === false ? "warn" : same ? "good" : ""}"><div class="k">検査した結果は回答と同じか</div>
-        <div class="v">${same === true ? "同じ" : same === false ? "別の結果" : "—"}</div></div>
+      <div class="metric"><div class="k">根拠の検査</div>
+        <div class="v">${review === true ? "通過" : review === false ? "不合格" : "—"}</div><div class="d">エラーなし・SQL あり・行あり</div></div>
     </div>
     <details open><summary>エージェントの回答</summary><div class="answer">${formatAnswer((fixed && fixed.summary) || r.answer || "(回答なし)")}</div></details>
     <details><summary>Data Agent が実行した SQL</summary><pre>${(tool.sql || []).map(highlightSql).join("\n\n") || "(なし)"}</pre></details>

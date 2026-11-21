@@ -55,8 +55,16 @@ def totals(statuses: set[str]) -> dict[str, int]:
     return result
 
 
+# Marks the table as created by this demo. provision.py refuses to touch a
+# table named `orders` that does not carry it.
+LABEL = ("managed-by", "adk-cloud-run-sales-demo")
+
+
 def seed_sql(project: str, dataset: str) -> str:
-    """One BigQuery script that recreates the table and its rows."""
+    """One BigQuery script that creates the table and its rows.
+
+    It never replaces a table: if `orders` already exists the script fails.
+    """
     table = f"`{project}.{dataset}.{TABLE}`"
     columns = ",\n  ".join(
         f"{name} {kind} NOT NULL OPTIONS(description='{DESCRIPTIONS[name]}')"
@@ -66,6 +74,7 @@ def seed_sql(project: str, dataset: str) -> str:
         f"('{order_id}', DATE '{date}', '{status}', {amount})" for order_id, date, status, amount in fixture()
     )
     return (
-        f"CREATE OR REPLACE TABLE {table} (\n  {columns}\n);\n"
+        f"CREATE TABLE {table} (\n  {columns}\n)\n"
+        f"OPTIONS(labels=[('{LABEL[0]}', '{LABEL[1]}')]);\n"
         f"INSERT INTO {table} ({', '.join(FIELDS)}) VALUES\n  {values};"
     )

@@ -2,7 +2,7 @@
 """Send one question to a deployed (or local) agent service and print what came back.
 
     python scripts/ask.py sales_defined "質問"            # SERVICE_URL must be set
-    python scripts/ask.py sales_raw sales_defined sales_reuse    # default question, several conditions
+    python scripts/ask.py sales_raw sales_defined    # default question, both conditions
 
 Uses `gcloud auth print-identity-token` for a private Cloud Run service
 (set GCLOUD_ACCOUNT to pick an account).
@@ -73,8 +73,7 @@ def main() -> None:
         print(f"===== {app}  {result['elapsed_seconds']}s")
         if result["errors"]:
             print("ERRORS:", json.dumps(result["errors"], ensure_ascii=False)[:1200])
-        print("Data Agent calls:", tool.get("data_agent_calls"), "| seconds:", tool.get("data_agent_seconds"),
-              "| review:", (tool.get("review") or {}).get("passed"), "| same evidence:", tool.get("reviewed_same_evidence"))
+        print("Data Agent seconds:", tool.get("data_agent_seconds"), "| review:", (tool.get("review") or {}).get("passed"))
         for table in tool.get("tables") or []:
             print("ROWS:", json.dumps(table.get("rows"), ensure_ascii=False)[:400])
         tokens = [(u.get("promptTokenCount"), u.get("candidatesTokenCount"), u.get("thoughtsTokenCount")) for u in result["usage"]]

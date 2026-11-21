@@ -1,16 +1,13 @@
 """ADK Root Agent that answers one business question about the sales data.
 
-The same question runs under three conditions. Each one changes exactly one
-thing from the previous:
+The same question runs under two conditions. The only difference is whether
+the company's business definition is given:
 
-    raw      no business definition; each consumer fetches its own analysis
-    defined  business definition;    each consumer fetches its own analysis
-    reuse    business definition;    consumers share one analysis per request
+    raw      no business definition
+    defined  business definition, read from the Catalog when the agent is built
 
-Two parts of the request need the analysis: the part that writes the answer and
-the part that reviews the evidence behind it. When each fetches for itself the
-Data Agent is called twice for one question. Sharing the result removes the
-second call, and makes the review look at the same evidence the answer used.
+Either way the Data Agent is asked once per question. The answer is written
+from that analysis, and the same analysis is what gets reviewed.
 """
 
 from __future__ import annotations
@@ -18,18 +15,17 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from typing import Any
 
 from google.adk import Agent, Context
 from opentelemetry import trace
 from pydantic import BaseModel, Field
 
-from .data_agent import DataAgentClient, business_rules, extract
+from .catalog import CatalogClient, catalog_location
+from .data_agent import DataAgentClient, extract, holds_definition
 
 CONDITIONS = {
-    "raw": {"variant": "raw", "definition": False, "share_evidence": False},
-    "defined": {"variant": "defined", "definition": True, "share_evidence": False},
-    "reuse": {"variant": "defined", "definition": True, "share_evidence": True},
+    "raw": {"variant": "raw", "definition": False},
+    "defined": {"variant": "defined", "definition": True},
 }
 STATE_KEY = "temp:sales_analysis"
 
@@ -79,6 +75,22 @@ def _client() -> DataAgentClient:
     return DataAgentClient(project, os.getenv("DATA_AGENT_LOCATION", "us"), _token)
 
 
+def _definition() -> dict:
+    """The business definition and its receipt, read from the Catalog.
+
+    The Data Agent holds its own copy of the definition, given when it was
+    created or last synced. If that copy differs from the Catalog, the two
+    agents would answer under different definitions while the trace shows only
+    one of them. So this fails instead of starting.
+    """
+    definition = CatalogClient(os.environ["GOOGLE_CLOUD_PROJECT"], catalog_location(), _token).definition()
+    if not holds_definition(_client().get("defined"), definition["body"]):
+        raise RuntimeError(
+            "The Catalog definition and the Data Agent's definition differ. Run scripts/sync_definition.py."
+        )
+    return definition
+
+
 def _question(ctx: Context) -> str:
     content = getattr(ctx, "user_content", None)
     parts = getattr(content, "parts", None) or []
@@ -96,15 +108,17 @@ def review_evidence(evidence: dict) -> dict:
     return {"passed": all(checks.values()), "checks": checks, "row_count": len(rows)}
 
 
-def build_root_agent(condition: str, client_factory=_client) -> Agent:
+def build_root_agent(condition: str, client_factory=_client, definition_loader=_definition) -> Agent:
     if condition not in CONDITIONS:
         raise ValueError(f"Unknown condition: {condition}")
     settings = CONDITIONS[condition]
+    # Read once, when the agent is built. A change to the entry takes effect on
+    # the next start, and every request records which version it used.
+    definition = definition_loader() if settings["definition"] else None
+    receipt = {k: definition[k] for k in ("entry", "update_time", "sha256")} if definition else None
 
-    async def fetch(question: str, consumer: str, number: int) -> dict:
+    async def fetch(question: str) -> dict:
         with tracer.start_as_current_span("data_agent.ask") as span:
-            span.set_attribute("sales.consumer", consumer)
-            span.set_attribute("sales.call_number", number)
             span.set_attribute("sales.data_agent_variant", settings["variant"])
             started = time.monotonic()
             client = client_factory()
@@ -127,50 +141,42 @@ def build_root_agent(condition: str, client_factory=_client) -> Agent:
             return dict(cached, note="Already retrieved. Use this evidence.")
 
         question = _question(tool_context)
-        with tracer.start_as_current_span("evidence.two_consumers") as span:
+        with tracer.start_as_current_span("sales.analysis") as span:
             span.set_attribute("sales.condition", condition)
             span.set_attribute("sales.business_definition", settings["definition"])
-            span.set_attribute("sales.share_evidence", settings["share_evidence"])
             span.set_attribute("sales.question", question[:200])
+            if receipt:
+                span.set_attribute("sales.definition_entry", receipt["entry"])
+                span.set_attribute("sales.definition_update_time", receipt["update_time"])
+                span.set_attribute("sales.definition_sha256", receipt["sha256"][:12])
 
-            # Consumer 1: the evidence the answer is written from.
-            for_answer = await fetch(question, "answer", 1)
-            # Consumer 2: the evidence that gets reviewed.
-            if settings["share_evidence"]:
-                for_review, calls = for_answer, 1
-            else:
-                for_review, calls = await fetch(question, "evidence_review", 2), 2
+            evidence = await fetch(question)
             with tracer.start_as_current_span("evidence.review"):
-                review = review_evidence(for_review)
-
-            same = for_answer["tables"] == for_review["tables"]
-            span.set_attribute("sales.data_agent_calls", calls)
+                review = review_evidence(evidence)
             span.set_attribute("sales.review_passed", review["passed"])
-            span.set_attribute("sales.reviewed_same_evidence", same)
 
             trace_id = format(span.get_span_context().trace_id, "032x")
 
         result = {
-            "status": "ERROR" if for_answer["errors"] else "SUCCESS",
+            "status": "ERROR" if evidence["errors"] else "SUCCESS",
             "condition": condition,
             # Lets a client link straight to this request in Cloud Trace.
             "trace_id": trace_id,
             "project": os.getenv("GOOGLE_CLOUD_PROJECT", ""),
-            "data_agent_calls": calls,
-            "answer": for_answer["answer"],
-            "sql": for_answer["sql"][-1:] if for_answer["sql"] else [],
-            "tables": for_answer["tables"][-1:],
+            "answer": evidence["answer"],
+            "sql": evidence["sql"][-1:] if evidence["sql"] else [],
+            "tables": evidence["tables"][-1:],
             "review": review,
-            "reviewed_same_evidence": same,
-            "data_agent_seconds": [for_answer["elapsed_seconds"]]
-            + ([] if settings["share_evidence"] else [for_review["elapsed_seconds"]]),
+            # Which definition this answer was written under. None for "raw".
+            "definition": receipt,
+            "data_agent_seconds": evidence["elapsed_seconds"],
         }
         tool_context.state[STATE_KEY] = result
         return result
 
     instruction = ROOT_INSTRUCTION
-    if settings["definition"]:
-        instruction += "\nこの会社の業務定義（答えではなくルール）：\n" + business_rules() + "\n"
+    if definition:
+        instruction += "\nこの会社の業務定義（答えではなくルール）：\n" + definition["body"] + "\n"
 
     return Agent(
         name=f"sales_{condition}",
@@ -180,7 +186,3 @@ def build_root_agent(condition: str, client_factory=_client) -> Agent:
         tools=[analyze_sales],
         output_schema=SalesAnswer,
     )
-
-
-def describe(condition: str) -> dict[str, Any]:
-    return dict(CONDITIONS[condition], condition=condition)

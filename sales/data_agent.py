@@ -1,7 +1,8 @@
 """Conversational Analytics (Data Agent) client: published context, create, chat.
 
 Two agents look at the same `orders` table. The only difference is whether the
-company's business definition is in the system instruction:
+company's business definition is in the system instruction. The definition
+itself comes from the Catalog (see sales/catalog.py):
 
     raw      orders table, no business definition
     defined  orders table, business definition
@@ -37,16 +38,20 @@ def baseline_instruction() -> str:
     return (ROOT / "semantics/baseline.txt").read_text(encoding="utf-8").strip()
 
 
-def business_rules() -> str:
+def starter_rules() -> str:
+    """The text the Catalog entry is first created with. Not read at run time."""
     return (ROOT / "semantics/business-rules.txt").read_text(encoding="utf-8").strip()
 
 
-def published_context(project: str, dataset: str, variant: str) -> dict:
+def published_context(project: str, dataset: str, variant: str, rules: str = "") -> dict:
+    """`rules` is the definition read from the Catalog. Required for "defined"."""
     if variant not in VARIANTS:
         raise ValueError(f"Unknown variant: {variant}")
     instruction = baseline_instruction()
     if variant == "defined":
-        instruction += "\n\n" + business_rules()
+        if not rules.strip():
+            raise ValueError("The defined variant needs the definition from the Catalog.")
+        instruction += "\n\n" + rules.strip()
     return {
         "datasourceReferences": {"bq": {"tableReferences": [
             {"projectId": project, "datasetId": dataset, "tableId": table} for table in TABLES
@@ -54,6 +59,12 @@ def published_context(project: str, dataset: str, variant: str) -> dict:
         "systemInstruction": instruction,
         "options": {"datasource": {"bigQueryMaxBilledBytes": "104857600"}},
     }
+
+
+def holds_definition(agent: dict | None, rules: str) -> bool:
+    """True when the "defined" Data Agent was given exactly this definition."""
+    published = (agent or {}).get("dataAnalyticsAgent", {}).get("publishedContext", {})
+    return published.get("systemInstruction") == baseline_instruction() + "\n\n" + rules.strip()
 
 
 def agent_id(variant: str) -> str:
@@ -101,9 +112,9 @@ class DataAgentClient:
                 return None
             raise
 
-    def ensure(self, variant: str, dataset: str) -> tuple[str, bool]:
+    def ensure(self, variant: str, dataset: str, rules: str = "") -> tuple[str, bool]:
         """Create the agent when missing. Returns (resource name, created)."""
-        context = published_context(self.project, dataset, variant)
+        context = published_context(self.project, dataset, variant, rules)
         existing = self.get(variant)
         if existing is not None:
             published = existing.get("dataAnalyticsAgent", {}).get("publishedContext", {})
@@ -122,6 +133,21 @@ class DataAgentClient:
         url = f"{self.base}{self.parent}/dataAgents:createSync?dataAgentId={agent_id(variant)}"
         self._request("POST", url, payload)
         return self.name(variant), True
+
+    def set_definition(self, dataset: str, rules: str) -> bool:
+        """Give the "defined" agent this definition. Returns False when it already had it."""
+        existing = self.get("defined")
+        if existing is None:
+            raise DataAgentError(self.name("defined") + " does not exist. Run scripts/provision.py first.")
+        if holds_definition(existing, rules):
+            return False
+        context = published_context(self.project, dataset, "defined", rules)
+        mask = "data_analytics_agent.published_context"
+        url = f"{self.base}{self.name('defined')}:updateSync?updateMask={mask}"
+        self._request("PATCH", url, {"name": self.name("defined"), "dataAnalyticsAgent": {"publishedContext": context}})
+        if not holds_definition(self.get("defined"), rules):
+            raise DataAgentError("The Data Agent did not take the new definition.")
+        return True
 
     def chat(self, variant: str, question: str) -> list[dict]:
         """Ask one question. The streaming response is one JSON array at EOF."""
