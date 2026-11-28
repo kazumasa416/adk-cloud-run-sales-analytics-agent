@@ -21,7 +21,7 @@ from opentelemetry import trace
 from pydantic import BaseModel, Field
 
 from .catalog import CatalogClient, catalog_location
-from .data_agent import DataAgentClient, extract, holds_definition
+from .data_agent import DataAgentClient, extract
 
 CONDITIONS = {
     "raw": {"variant": "raw", "definition": False},
@@ -76,20 +76,8 @@ def _client() -> DataAgentClient:
 
 
 def _definition() -> dict:
-    """The business definition and its receipt, read from the Catalog.
-
-    Each version of the definition has its own Data Agent, created by
-    scripts/sync_definition.py. If no agent holds the text that is in the
-    Catalog now, the two agents would answer under different definitions while
-    the trace shows only one of them. So this fails instead of starting.
-    """
-    definition = CatalogClient(os.environ["GOOGLE_CLOUD_PROJECT"], catalog_location(), _token).definition()
-    if not holds_definition(_client().get("defined", definition["version"]), definition["body"]):
-        raise RuntimeError(
-            f"No Data Agent holds definition {definition['version']} that is in the Catalog now. "
-            "Run scripts/sync_definition.py."
-        )
-    return definition
+    """Read the same glossary term that is linked to the defined table."""
+    return CatalogClient(os.environ["GOOGLE_CLOUD_PROJECT"], catalog_location(), _token).definition()
 
 
 def _question(ctx: Context) -> str:
@@ -113,11 +101,7 @@ def build_root_agent(condition: str, client_factory=_client, definition_loader=_
     if condition not in CONDITIONS:
         raise ValueError(f"Unknown condition: {condition}")
     settings = CONDITIONS[condition]
-    # Read once, when the agent is built. From then on this process uses that
-    # text and the Data Agent of that version, and records the version on every
-    # request. A change to the entry takes effect on the next start.
     definition = definition_loader() if settings["definition"] else None
-    version = definition["version"] if definition else ""
     receipt = {k: definition[k] for k in ("entry", "update_time", "sha256")} if definition else None
 
     async def fetch(question: str) -> dict:
@@ -125,7 +109,7 @@ def build_root_agent(condition: str, client_factory=_client, definition_loader=_
             span.set_attribute("sales.data_agent_variant", settings["variant"])
             started = time.monotonic()
             client = client_factory()
-            agent = client.name(settings["variant"], version)
+            agent = client.name(settings["variant"])
             span.set_attribute("sales.data_agent", agent.rsplit("/", 1)[-1])
             messages = await asyncio.to_thread(client.chat, agent, question)
             evidence = extract(messages)

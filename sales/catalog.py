@@ -1,14 +1,4 @@
-"""The company's business definition, kept as one entry in the Catalog.
-
-The definition is not a file that ships with the agent. It is an entry that
-the business can own and edit, and the agent reads it from there. What comes
-back is a receipt: which entry, when it was last updated, and a hash of the
-text. The receipt goes into the trace, so a request can be traced back to the
-exact definition it used.
-
-The entry is not linked to the `orders` table. A term linked to the table
-could reach the "raw" condition too, and the comparison would stop being fair.
-"""
+"""Knowledge Catalog business glossary and its BigQuery table link."""
 
 from __future__ import annotations
 
@@ -26,8 +16,8 @@ GROUP_ID = "sales-demo"
 TYPE_ID = "sales-definition"
 ENTRY_ID = "confirmed-sales"
 TITLE = "確定売上"
-DESCRIPTION = "営業会議でいう「売上」の定義"
-OVERVIEW_KEY = "dataplex-types.global.overview"
+GLOSSARY_ID = "sales-demo-glossary"
+GLOSSARY_DESCRIPTION = "adk-cloud-run-sales-demo"
 
 
 class CatalogError(RuntimeError):
@@ -44,7 +34,9 @@ class CatalogClient:
     def __init__(self, project: str, location: str, token: Callable[[], str]):
         self.project = project
         self.parent = f"projects/{project}/locations/{location}"
-        self.entry_name = f"{self.parent}/entryGroups/{GROUP_ID}/entries/{ENTRY_ID}"
+        self.location = location
+        self.glossary = f"{self.parent}/glossaries/{GLOSSARY_ID}"
+        self.term = f"{self.glossary}/terms/{ENTRY_ID}"
         self._token = token
 
     def _request(self, method: str, path: str, payload: dict | None = None, missing_ok: bool = False):
@@ -76,6 +68,8 @@ class CatalogClient:
             response = self._request("GET", response["name"])
         if response.get("error"):
             raise CatalogError("Catalog operation failed: " + json.dumps(response["error"])[:600])
+        if "/operations/" in response.get("name", "") and not response.get("done"):
+            raise CatalogError(f"Catalog operation timed out: {response['name']}")
         return response
 
     def _ensure(self, collection: str, ident: str, id_key: str, payload: dict) -> dict:
@@ -86,43 +80,46 @@ class CatalogClient:
         self._wait(self._request("POST", collection + "?" + urllib.parse.urlencode({id_key: ident}), payload))
         return self._request("GET", name)
 
-    def ensure_entry(self, starter: str) -> bool:
-        """Create the entry from `starter` when missing. An existing entry is never overwritten."""
-        if self._request("GET", self.entry_name + "?view=ALL", missing_ok=True) is not None:
-            return False
-        meta = {"displayName": "Sales demo definitions", "description": "adk-cloud-run-sales-demo"}
-        self._ensure(self.parent + "/entryGroups", GROUP_ID, "entryGroupId", meta)
-        kind = self._ensure(self.parent + "/entryTypes", TYPE_ID, "entryTypeId", meta)
-        self._request(
-            "POST",
-            f"{self.parent}/entryGroups/{GROUP_ID}/entries?" + urllib.parse.urlencode({"entryId": ENTRY_ID}),
-            {
-                "entryType": kind["name"],
-                "entrySource": {"displayName": TITLE, "description": DESCRIPTION},
-                "aspects": {OVERVIEW_KEY: {"data": {"content": starter, "contentType": "MARKDOWN"}}},
-            },
-        )
-        return True
+    def ensure_term(self, starter: str) -> None:
+        glossary = self._ensure(self.parent + "/glossaries", GLOSSARY_ID, "glossaryId", {
+            "displayName": "Sales demo", "description": GLOSSARY_DESCRIPTION,
+        })
+        if glossary.get("description") != GLOSSARY_DESCRIPTION:
+            raise CatalogError(f"Glossary already exists outside this demo: {self.glossary}")
+        self._ensure(self.glossary + "/terms", ENTRY_ID, "termId", {
+            "displayName": TITLE, "description": starter, "parent": self.glossary,
+        })
+
+    def table_link(self, number: str, dataset: str, table: str) -> tuple[str, dict]:
+        parent = f"projects/{number}/locations/{self.location}"
+        groups = parent + "/entryGroups"
+        source = (f"{groups}/@bigquery/entries/bigquery.googleapis.com/projects/{self.project}"
+                  f"/datasets/{dataset}/tables/{table}")
+        target = f"{groups}/@dataplex/entries/{parent}/glossaries/{GLOSSARY_ID}/terms/{ENTRY_ID}"
+        key = hashlib.sha256(source.encode()).hexdigest()[:12]
+        return f"{groups}/@bigquery/entryLinks/sales-glossary-{key}", {
+            "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/definition",
+            "entryReferences": [{"name": source, "type": "SOURCE"}, {"name": target, "type": "TARGET"}],
+        }
+
+    def ensure_link(self, number: str, dataset: str, table: str) -> None:
+        name, payload = self.table_link(number, dataset, table)
+        collection, ident = name.rsplit("/", 1)
+        link = self._ensure(collection, ident, "entryLinkId", payload)
+        if not self.matches_link(link, payload):
+            raise CatalogError(f"Existing entry link points to different resources: {name}")
+
+    @staticmethod
+    def matches_link(link: dict, payload: dict) -> bool:
+        def refs(value):
+            return {(r["type"], r["name"], r.get("path", "")) for r in value["entryReferences"]}
+        return link.get("entryLinkType", "").endswith("/entryLinkTypes/definition") and refs(link) == refs(payload)
 
     def definition(self) -> dict:
-        """Read the entry. Returns the text and a receipt of what was read."""
-        entry = self._request("GET", self.entry_name + "?view=ALL", missing_ok=True)
-        if entry is None:
-            raise CatalogError(f"{self.entry_name} does not exist. Run scripts/provision.py first.")
-        overviews = [
-            aspect for aspect in entry.get("aspects", {}).values()
-            if aspect.get("aspectType", "").endswith("/aspectTypes/overview")
-        ]
-        body = (overviews[0].get("data", {}).get("content", "") if len(overviews) == 1 else "").strip()
+        term = self._request("GET", self.term)
+        body = term.get("description", "").strip()
         if not body:
-            raise CatalogError(f"{self.entry_name} has no overview text. A local file is not used instead.")
+            raise CatalogError(f"{self.term} has no definition.")
         digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-        return {
-            "entry": entry["name"],
-            "title": entry.get("entrySource", {}).get("displayName", ""),
-            "update_time": entry.get("updateTime", ""),
-            "sha256": digest,
-            # Short form of the hash. Names the Data Agent that holds this text.
-            "version": digest[:12],
-            "body": body,
-        }
+        return {"entry": term["name"], "title": term["displayName"], "update_time": term.get("updateTime", ""),
+                "sha256": digest, "version": digest[:12], "body": body}

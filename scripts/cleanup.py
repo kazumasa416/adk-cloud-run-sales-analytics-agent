@@ -4,9 +4,8 @@
     PROJECT_ID=my-project python scripts/cleanup.py         # show what would be deleted
     PROJECT_ID=my-project python scripts/cleanup.py --yes   # delete
 
-Only resources that carry this demo's mark are deleted: the `orders` table with
-its label, and the Data Agents (one per version of the definition) and the
-Catalog entry with their description.
+Removes the demo agents, its glossary term and link, the labelled order
+tables, and legacy Catalog resources created by earlier sample versions.
 The BigQuery dataset and the Cloud Run service are left for you (see README).
 """
 
@@ -18,9 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from provision import bq, token  # noqa: E402
+from provision import bq, gcloud, token  # noqa: E402
 from sales import data  # noqa: E402
-from sales.catalog import GROUP_ID, TYPE_ID, CatalogClient, catalog_location  # noqa: E402
+from sales.catalog import GLOSSARY_DESCRIPTION, GROUP_ID, TYPE_ID, CatalogClient, catalog_location  # noqa: E402
 from sales.data_agent import MARK, DataAgentClient  # noqa: E402
 
 
@@ -37,12 +36,31 @@ def main() -> None:
             agents.delete(name)
 
     catalog = CatalogClient(project, catalog_location(), token)
+    number = gcloud("projects", "describe", project, "--format=value(projectNumber)")
+    link_name, expected = catalog.table_link(number, dataset, data.GLOSSARY_TABLE)
+    link = catalog._request("GET", link_name, missing_ok=True)
+    if link and catalog.matches_link(link, expected):
+        found.append("Catalog link  " + link_name)
+        if delete:
+            catalog._wait(catalog._request("DELETE", link_name))
+    glossary = catalog._request("GET", catalog.glossary, missing_ok=True)
+    if glossary and glossary.get("description") == GLOSSARY_DESCRIPTION:
+        if catalog._request("GET", catalog.term, missing_ok=True):
+            found.append("Catalog term  " + catalog.term)
+            if delete:
+                catalog._wait(catalog._request("DELETE", catalog.term))
+        found.append("Catalog glossary  " + catalog.glossary)
+        if delete:
+            catalog._wait(catalog._request("DELETE", catalog.glossary))
+
+    # Resources created by releases before the business glossary migration.
+    legacy_entry = f"{catalog.parent}/entryGroups/{GROUP_ID}/entries/confirmed-sales"
     group = catalog._request("GET", f"{catalog.parent}/entryGroups/{GROUP_ID}", missing_ok=True)
     if group is not None and group.get("description") == MARK:
-        if catalog._request("GET", catalog.entry_name, missing_ok=True) is not None:
-            found.append("Catalog entry  " + catalog.entry_name)
+        if catalog._request("GET", legacy_entry, missing_ok=True) is not None:
+            found.append("Catalog entry  " + legacy_entry)
             if delete:
-                catalog._request("DELETE", catalog.entry_name)
+                catalog._request("DELETE", legacy_entry)
         found.append("Catalog entry group  " + group["name"])
         if delete:
             catalog._wait(catalog._request("DELETE", f"{catalog.parent}/entryGroups/{GROUP_ID}"))
@@ -52,12 +70,13 @@ def main() -> None:
         if delete:
             catalog._wait(catalog._request("DELETE", f"{catalog.parent}/entryTypes/{TYPE_ID}"))
 
-    table_path = f"/projects/{project}/datasets/{dataset}/tables/{data.TABLE}"
-    table = bq("GET", table_path, None, project)
-    if table is not None and (table.get("labels") or {}).get(data.LABEL[0]) == data.LABEL[1]:
-        found.append(f"BigQuery table  {project}.{dataset}.{data.TABLE}")
-        if delete:
-            bq("DELETE", table_path, None, project)
+    for table_id in (data.GLOSSARY_TABLE, data.TABLE):
+        table_path = f"/projects/{project}/datasets/{dataset}/tables/{table_id}"
+        table = bq("GET", table_path, None, project)
+        if table is not None and (table.get("labels") or {}).get(data.LABEL[0]) == data.LABEL[1]:
+            found.append(f"BigQuery table  {project}.{dataset}.{table_id}")
+            if delete:
+                bq("DELETE", table_path, None, project)
 
     for line in found:
         print(("Deleted  " if delete else "Would delete  ") + line)

@@ -22,6 +22,9 @@ AGENT_SA="${AGENT_SA:-${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
 ENV_VARS="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
 ENV_VARS="${ENV_VARS},GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION},ROOT_MODEL=${ROOT_MODEL}"
 ENV_VARS="${ENV_VARS},DATA_AGENT_LOCATION=${DATA_AGENT_LOCATION},CATALOG_LOCATION=${CATALOG_LOCATION}"
+for key in DATA_AGENT_ID_RAW DATA_AGENT_ID_DEFINED; do
+  if [[ -n "${!key:-}" ]]; then ENV_VARS="${ENV_VARS},${key}=${!key}"; fi
+done
 # Cloud Run forwards a mostly-unsampled trace context. Without always_on the
 # default parent-based sampler drops every agent span.
 ENV_VARS="${ENV_VARS},TRACE_TO_CLOUD=true,OTEL_TRACES_SAMPLER=always_on"

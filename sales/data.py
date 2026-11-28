@@ -16,6 +16,7 @@ are counted. All amounts are integer JPY, tax excluded.
 from __future__ import annotations
 
 TABLE = "orders"
+GLOSSARY_TABLE = "orders_glossary"
 FIELDS = ["order_id", "order_date", "status", "amount_jpy"]
 DESCRIPTIONS = {
     "order_id": "注文 ID",

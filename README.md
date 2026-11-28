@@ -5,7 +5,7 @@ ADK の Root Agent が Conversational Analytics の Data Agent に分析を頼�
 
 ## データと、答えが変わる理由
 
-テーブルは `orders` の 1 つだけです（88 行、4 列）。注文の状態は 3 つあります。
+架空の注文 88 件（4 列）を使います。注文の状態は 3 つあります。
 
 | status | 意味 |
 |---|---|
@@ -30,11 +30,10 @@ ADK の Root Agent が Conversational Analytics の Data Agent に分析を頼�
 | `sales_raw` | なし |
 | `sales_defined` | あり |
 
-- 2 条件とも同じ `orders` テーブルを参照します
-- 業務定義（4 行）は Catalog のエントリ `sales-demo/confirmed-sales`（確定売上）に置き、そこから読みます。有無は Data Agent と Root Agent の両方でそろえています
-- Root Agent は起動時に Catalog から定義を読み、どのエントリの、いつ更新された版を使ったかをトレース（`sales.definition_*`）と応答（`definition`）に残します
-- Data Agent は定義の写しを自分で持ちます。定義の版（本文の sha256 の先頭 12 桁）ごとに別の Data Agent（`sales-defined-<版>`）を作り、作ったものは書き換えません。Root Agent は、自分が読んだ版の Data Agent にだけ問い合わせます。エントリを書き換えたら `scripts/sync_definition.py` で反映します（「定義を変えてみる」を参照）
-- エントリは `orders` テーブルに紐づけていません。紐づけた用語は「定義なし」の条件にも届く恐れがあるためです
+- `sales_raw` は元の `orders` を、`sales_defined` は同じ 88 件を複製した `orders_glossary` を参照します。
+- セットアップ時に Knowledge Catalog のビジネス用語集 `sales-demo-glossary` に「確定売上」を登録し、複製側のテーブルだけに関連付けます。既存の用語の定義は保持します。
+- 両方の Data Agent の指示文は同じです。BigQuery の定義あり側の Data Agent を開き、「用語集」で「確定売上」と関連先の `orders_glossary` を確認できます。
+- 定義あり側の Root Agent は起動時に同じ用語の説明を読み、指示に加えます。トレースと応答には、その時点で Root Agent が読んだ定義のハッシュが残ります。
 - どちらの条件でも、Data Agent への依頼は 1 問につき 1 回です。回答はその分析結果から書き、根拠の検査も同じ結果に対して行います
 
 ## 構成
@@ -44,29 +43,29 @@ client -> Cloud Run: agent (private, ID token)
             |-- Catalog                       業務定義（確定売上）。起動時に読む
             |-- Gemini (Vertex AI)            Root Agent のモデル
             |-- Data Agent (raw / defined)    分析。SQL を書いて実行する
-            |     `-- BigQuery                orders テーブル
+            |     `-- BigQuery                条件に対応する注文テーブル
             `-- Cloud Trace                   model / tool / Data Agent 呼び出し単位
 ```
 
 - `sales/root.py`: Root Agent。条件ごとに 1 つ作る
-- `sales/catalog.py`: Catalog のエントリの作成と読み取り
+- `sales/catalog.py`: ビジネス用語の作成・読み取りとテーブルへの関連付け
 - `sales/data_agent.py`: Data Agent の定義、作成、質問
 - `sales/data.py`: データと BigQuery への投入 SQL
 - `agents/sales_*/agent.py`: ADK の app
 - `server.py`: ADK API server。`/` で比較画面も返す
 - `web/index.html`: 比較画面（1 ファイル、build なし）
 - `scripts/`: 準備（`provision.py`）、deploy、定義の反映（`sync_definition.py`）、実行と trace、手元からの転送（`proxy.py`）、片付け（`cleanup.py`）
-- `semantics/`: 共通の指示と、Catalog のエントリを最初に作るときの本文
+- `semantics/`: 共通の指示と、用語を最初に登録するときの本文
 
 ## 準備
 
-Python 3.11 以上、gcloud、[Agents CLI](https://google.github.io/agents-cli/) が必要です。課金が有効な Google Cloud project を 1 つ用意し、その owner で実行してください。
+Python 3.11 以上、gcloud、[Agents CLI](https://google.github.io/agents-cli/) が必要です。課金が有効な Google Cloud project を 1 つ用意し、その owner で実行してください。既定では BigQuery と Catalog を US に作成します。場所を変更する場合は、BigQuery テーブルと用語集を同じロケーションにしてください。
 
 ```bash
 export PROJECT_ID="YOUR_PROJECT_ID"
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -c constraints.txt
-python scripts/provision.py     # API 有効化、dataset、orders テーブル、Catalog のエントリ、Data Agent 2 つ
+python scripts/provision.py     # API 有効化、dataset、注文テーブルと複製、用語と関連付け、Data Agent 2 つ
 ./scripts/deploy.sh             # agent service を Cloud Run に deploy
 ```
 
@@ -101,22 +100,19 @@ python scripts/ask.py sales_raw sales_defined   # 同じ質問を 2 条件で
 python scripts/trace.py 3                       # 直近 3 回の Cloud Trace
 ```
 
-`sales_defined` の trace には、使った定義が `sales.definition_entry`、`sales.definition_update_time`、`sales.definition_sha256` として、問い合わせた Data Agent が `sales.data_agent` として残ります。
+`sales_defined` の trace には、Root Agent が起動時に読んだ定義が `sales.definition_entry`、`sales.definition_update_time`、`sales.definition_sha256` として、問い合わせた Data Agent が `sales.data_agent` として残ります。
 
 ## 定義を変えてみる
 
-Google Cloud コンソールの Catalog で、エントリ「確定売上」（entry group `sales-demo`）の概要を書き換えます。たとえば「検収済」を「受注と検収済」に変えます。そのあと、次を実行します。
+Knowledge Catalog の用語集 `sales-demo-glossary` で「確定売上」の説明を編集します。定義あり側の Data Agent の「用語集」で変更が反映されたことを確認し、次を実行して Root Agent にも読み直させます。
 
 ```bash
 python scripts/sync_definition.py
 ```
 
-いまの定義の版に対応する Data Agent を作り（すでにあれば何もしません）、Cloud Run の新しい revision を起動して Root Agent に読ませます。表示される sha256 が、次の実行の trace に残る値と同じになります。
+用語の反映と Cloud Run の revision 切り替えには時間差があります。比較実験は両方に新しい定義が反映された後に実行してください。
 
-- 動いている Root Agent は、起動時に読んだ版と、その版の Data Agent を使い続けます。新しい revision に替わるまで、回答も trace に残る版も前のままです。revision の起動に失敗しても、この組み合わせは崩れません
-- Root Agent は起動時に Catalog を読み、その版の Data Agent があることを確かめます。無ければ起動しません
-- このため、Catalog を書き換えたあと `sync_definition.py` を実行するまでの間に Cloud Run が新しい instance を起動すると、その instance は起動に失敗し、質問に答えられなくなります（古い定義では答えません）。書き換えたら続けて `sync_definition.py` を実行してください
-- 以前の版の Data Agent は残ります。定義を元に戻すと、その版の Data Agent をそのまま使います
+旧版から更新する場合は `provision.py` を再実行してから再デプロイしてください。以前のカスタムエントリを編集していた場合は、その内容を新しい用語の説明に反映してください。
 
 ## 片付け
 
@@ -126,7 +122,7 @@ python scripts/cleanup.py --yes    # 削除
 gcloud run services delete sales-analytics-agent --project "$PROJECT_ID" --region asia-northeast1
 ```
 
-`cleanup.py` が削除するのは、`provision.py` と `sync_definition.py` が作った `orders` テーブル、Data Agent（定義の版ごとに 1 つ増えます）、Catalog のエントリだけです。BigQuery の dataset（`sales_demo`）は残るので、ほかに使っていなければ削除してください。
+削除予定の一覧にはデモの Data Agent、用語とテーブルの関連付け、用語、用語集、ラベル付きの注文テーブル 2 つが表示されます。旧版で作成したデモ用のカスタムエントリも対象です。dataset は残ります。
 
 ## 費用と注意
 
@@ -143,9 +139,13 @@ pip install -r requirements.txt -c constraints.txt pytest
 pytest -q
 ```
 
-Google Cloud には接続しません。手計算の合計、条件ごとの定義の有無、定義が Catalog から渡ること、定義の版ごとに Data Agent が分かれること、既存の Data Agent を指示文と参照先が同じときだけ使い回すこと、Data Agent への依頼が 1 問につき 1 回であることを確かめます。
+Google Cloud には接続しません。手計算の合計、条件ごとの定義の有無、定義が Catalog から渡ること、用語の関連先が定義あり側のテーブルであること、既存の Data Agent を指示文と参照先が同じときだけ使い回すこと、Data Agent への依頼が 1 問につき 1 回であることを確かめます。
 
-## 確認状況（2026-11-21）
+## 用語集を使った検証（2026-11-28）
+
+発表用の実プロジェクトでは `orders` の複製 `orders_glossary_trial` にだけ用語を関連付けました。本サンプルの複製名は `orders_glossary` です。定義ありの条件で同じ質問を新しいセッションから 5 回実行し、5 回とも SQL は検収済みの注文だけを集計しました。9 月は 1,200 万円、10 月は 1,056 万円（12.0% 減）です。
+
+## 参考：指示文で定義を渡していた旧実装の計測（2026-11-21）
 
 実 project で、2 条件を交互に 5 回ずつ実行した結果です。回答は実行のたびに変わることがあります。この計測は、定義の版ごとに Data Agent を分ける変更の 1 つ前の commit（`c59831e`）で行いました。変更後は、定義の書き換え・反映・切り戻しで回答と版が入れ替わることだけを確かめています。
 

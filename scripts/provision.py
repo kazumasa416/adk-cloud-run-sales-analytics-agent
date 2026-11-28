@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the BigQuery dataset, the orders table, the Catalog entry and the two Data Agents.
+"""Create the BigQuery dataset, the orders table, the glossary term and table link and the two Data Agents.
 
 Run once per project, as a user who owns the project:
 
@@ -122,16 +122,52 @@ def main() -> None:
             "Run again with --recreate-table to load them."
         )
 
+    clone_path = f"/projects/{project}/datasets/{dataset}/tables/{data.GLOSSARY_TABLE}"
+    clone = bq("GET", clone_path, None, project)
+    if clone is not None:
+        if clone.get("labels", {}).get(data.LABEL[0]) != data.LABEL[1]:
+            raise SystemExit(f"Unmanaged table at {clone_path}. Choose another BQ_DATASET.")
+        if "--recreate-table" in sys.argv[1:]:
+            bq("DELETE", clone_path, None, project)
+            clone = None
+    if clone is None:
+        result = bq("POST", f"/projects/{project}/queries", {
+            "query": (f"CREATE TABLE `{project}.{dataset}.{data.GLOSSARY_TABLE}` "
+                      f"CLONE `{project}.{dataset}.{data.TABLE}` "
+                      f"OPTIONS(labels=[('{data.LABEL[0]}', '{data.LABEL[1]}')])"),
+            "useLegacySql": False, "location": bq_location, "timeoutMs": 120000,
+        }, project)
+        if not result or not result.get("jobComplete") or result.get("errors"):
+            raise SystemExit(f"Could not create the glossary table: {result}")
+
+    # A previous run may have cloned an older version of the source table.
+    # Compare row multiplicities as well as values on every run.
+    comparison = bq("POST", f"/projects/{project}/queries", {
+        "query": f"""
+            SELECT COUNT(*) AS mismatches FROM (
+                SELECT order_id, order_date, status, amount_jpy FROM (
+                    SELECT *, 1 AS delta FROM `{project}.{dataset}.{data.TABLE}`
+                    UNION ALL
+                    SELECT *, -1 AS delta FROM `{project}.{dataset}.{data.GLOSSARY_TABLE}`
+                )
+                GROUP BY order_id, order_date, status, amount_jpy HAVING SUM(delta) != 0
+            )
+        """, "useLegacySql": False, "location": bq_location, "timeoutMs": 120000,
+    }, project)
+    if not comparison or not comparison.get("jobComplete") or not comparison.get("rows"):
+        raise SystemExit(f"Could not compare the two tables: {comparison}")
+    if int(comparison["rows"][0]["f"][0]["v"]):
+        raise SystemExit("The two tables differ. Run again with --recreate-table.")
+
     catalog = CatalogClient(project, catalog_location(), token)
-    print(("Created " if catalog.ensure_entry(starter_rules()) else "Kept ") + catalog.entry_name)
-    definition = catalog.definition()
-    print(f"Definition: updated {definition['update_time']} sha256 {definition['version']}")
+    catalog.ensure_term(starter_rules())
+    number = gcloud("projects", "describe", project, "--format=value(projectNumber)")
+    catalog.ensure_link(number, dataset, data.GLOSSARY_TABLE)
+    print(f"Linked {catalog.term} to {dataset}.{data.GLOSSARY_TABLE}")
 
     client = DataAgentClient(project, agent_location, token)
     for variant in VARIANTS:
-        # The "defined" agent is named after the version of the definition it holds.
-        version = definition["version"] if variant == "defined" else ""
-        name, was_created = client.ensure(variant, dataset, definition["body"], version)
+        name, was_created = client.ensure(variant, dataset)
         print(("Created " if was_created else "Kept ") + name)
 
 
